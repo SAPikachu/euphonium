@@ -91,7 +91,22 @@ impl MessageExt for Message {
         }
     }
     fn is_resp_for(&self, other: &Message) -> bool {
-        // TODO
+        if self.get_message_type() != MessageType::Response {
+            return false;
+        }
+        if other.get_id() != self.get_id() {
+            return false;
+        }
+        if other.get_op_code() != self.get_op_code() {
+            return false;
+        }
+        assert_eq!(other.get_queries().len(), 1);
+        if self.get_queries().len() != 1 {
+            return false;
+        }
+        if other.get_queries()[0] != self.get_queries()[0] {
+            return false;
+        }
         true
     }
 }

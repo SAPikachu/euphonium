@@ -51,6 +51,11 @@ fn query(q: Query, server: Ipv4Addr) -> Result<Message> {
 fn handle_request(msg: Message) -> Message {
     let mut ret : Message = msg.new_resp();
     ret.recursion_available(true);
+    if msg.get_queries().len() != 1 {
+        // For simplicity, only support one questionreturn 
+        ret.response_code(ResponseCode::Refused);
+        return ret;
+    }
     // TODO: EDNS?
     match query(msg.get_queries()[0].clone(), Ipv4Addr::new(8, 8, 8, 8)) {
         Ok(resp) => { ret.copy_resp_from(&resp); },
