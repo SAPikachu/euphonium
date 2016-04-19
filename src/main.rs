@@ -53,10 +53,11 @@ fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
         .cloned()
         .map(move |server| {
             let qc = q.clone();
-            Future::from_fn(move || query(qc, server.clone()))
+            Future::from_fn(move || query(qc, server))
         })
         .collect::<Vec<Future<Result<Message>>>>();
     let result_index = Future::wait_any(&mut futures);
+    // TODO: Handle server failure
     futures.remove(result_index).consume()
 }
 
