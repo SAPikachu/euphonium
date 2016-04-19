@@ -43,8 +43,8 @@ fn query(q: Query, server: Ipv4Addr) -> Result<Message> {
             continue
         }
         // TODO: Validate response, handle truncated message, retry and timeout
-        debug!("A[{}][{}] {} answer(s)",
-           server, resp.get_id(), resp.get_answers().len());
+        debug!("A[{}][{}] {:?} {} answer(s)",
+           server, resp.get_id(), resp.get_response_code(), resp.get_answers().len());
         return Ok(resp);
     };
 }
@@ -56,9 +56,29 @@ fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
             Future::from_fn(move || query(qc, server))
         })
         .collect::<Vec<Future<Result<Message>>>>();
-    let result_index = Future::wait_any(&mut futures);
-    // TODO: Handle server failure
-    futures.remove(result_index).consume()
+    loop {
+        let result_index = Future::wait_any(&mut futures);
+        let result = futures.remove(result_index).consume();
+        let mut should_return = futures.len() == 0;
+        match result {
+            Ok(ref msg) => {
+                match msg.get_response_code() {
+                    ResponseCode::ServFail |
+                    ResponseCode::NotImp |
+                    ResponseCode::Refused => {
+                        // Fall below to wait for remaining servers, if any
+                    },
+                    _ => { should_return = true; },
+                }
+            },
+            Err(ref err) => {
+                debug!("Query {:?} returned error {:?}", q, err);
+            },
+        };
+        if should_return {
+            return result;
+        }
+    }
 }
 
 fn handle_request(msg: Message) -> Message {
