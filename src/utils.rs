@@ -14,6 +14,7 @@ quick_error! {
     pub enum Error {
         Io(err: io::Error) {
             from()
+            from(kind: io::ErrorKind) -> (io::Error::new(kind, "Io"))
             description(err.description())
         }
         Decode(err: DecodeError) {

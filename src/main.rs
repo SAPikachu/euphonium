@@ -1,5 +1,5 @@
 extern crate env_logger;
-extern crate mioco;
+#[macro_use] extern crate mioco;
 extern crate trust_dns;
 extern crate rand;
 #[macro_use] extern crate quick_error;
@@ -12,10 +12,13 @@ use std::net::{SocketAddr, SocketAddrV4, IpAddr};
 
 use mioco::udp::UdpSocket;
 use mioco::mio::Ipv4Addr;
+use mioco::timer::Timer;
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode};
 
-use utils::{Result, CloneExt, MessageExt};
+use utils::{Result, Error, CloneExt, MessageExt};
 use future::Future;
+
+const QUERY_TIMEOUT: i64 = 5000;
 
 fn query(q: Query, server: Ipv4Addr) -> Result<Message> {
     let mut msg : Message = Message::new();
@@ -30,19 +33,33 @@ fn query(q: Query, server: Ipv4Addr) -> Result<Message> {
     let mut sock = try!(UdpSocket::v4());
     let target = SocketAddr::new(IpAddr::V4(server), 53);
     try!(sock.send(&msg_data, &target));
+    let mut timer = Timer::new();
+    timer.set_timeout(QUERY_TIMEOUT);
+    let mut buf = [0u8; 1024 * 16];
     loop {
-        let (resp, addr) = try!(Message::from_udp(&mut sock));
+        select! {
+            r:sock => { /* Fall below */ },
+            r:timer => {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            },
+        };
+        let result = try!(sock.try_recv(&mut buf));
+        if result.is_none() {
+            continue;
+        }
+        let (len, addr) = result.unwrap();
         if addr != target {
             warn!("Q[{}][{}] Response from unexpected server: {}",
                   server, msg.get_id(), addr);
             continue
         }
+        let resp = try!(Message::from_bytes(&buf[0..len]));
         if ! resp.is_resp_for(&msg) {
             warn!("Q[{}][{}] Invalid response: {:?}",
                   server, msg.get_id(), resp);
             continue
         }
-        // TODO: Validate response, handle truncated message, retry and timeout
+        // TODO: Validate response, handle truncated message
         debug!("A[{}][{}] {:?} {} answer(s)",
            server, resp.get_id(), resp.get_response_code(), resp.get_answers().len());
         return Ok(resp);
@@ -71,8 +88,11 @@ fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
                     _ => { should_return = true; },
                 }
             },
+            Err(Error::Io(ref err)) if err.kind() == std::io::ErrorKind::TimedOut => {
+                debug!("{:?} timed out", q);
+            },
             Err(ref err) => {
-                debug!("Query {:?} returned error {:?}", q, err);
+                debug!("{:?} returned error {:?}", q, err);
             },
         };
         if should_return {
@@ -90,7 +110,7 @@ fn handle_request(msg: Message) -> Message {
         return ret;
     }
     // TODO: EDNS?
-    match query_multiple(&msg.get_queries()[0], &[Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(8, 8, 4, 4)]) {
+    match query_multiple(&msg.get_queries()[0], &[Ipv4Addr::new(1, 8, 8, 8), Ipv4Addr::new(1, 8, 4, 4)]) {
         Ok(resp) => { ret.copy_resp_from(&resp); },
         Err(_)   => { ret.response_code(ResponseCode::ServFail); },
     };
