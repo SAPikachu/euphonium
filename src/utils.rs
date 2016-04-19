@@ -91,6 +91,7 @@ impl MessageExt for Message {
         }
     }
     fn is_resp_for(&self, other: &Message) -> bool {
+        assert_eq!(other.get_message_type(), MessageType::Query);
         if self.get_message_type() != MessageType::Response {
             return false;
         }
