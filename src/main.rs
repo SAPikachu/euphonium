@@ -13,6 +13,7 @@ use std::net::{SocketAddr, SocketAddrV4, IpAddr};
 use mioco::udp::UdpSocket;
 use mioco::mio::Ipv4Addr;
 use mioco::timer::Timer;
+use mioco::sync::mpsc::{Sender, channel};
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode};
 
 use utils::{Result, Error, CloneExt, MessageExt};
@@ -116,6 +117,11 @@ fn handle_request(msg: Message) -> Message {
     };
     ret
 }
+fn handle_request_async(msg: Message, addr: SocketAddr, sender: Sender<(Message, SocketAddr)>) {
+    mioco::spawn(move || {
+        sender.send((handle_request(msg), addr)).unwrap();
+    });
+}
 
 fn main() {
     env_logger::init().unwrap();
@@ -130,11 +136,21 @@ fn main() {
             let mut sock : UdpSocket = UdpSocket::v4().unwrap();
             sock.bind(&addr).unwrap();
 
+            let (sender, receiver) = channel::<(Message, SocketAddr)>();
+            {
+                let mut sock_resp = sock.try_clone().unwrap();
+                mioco::spawn(move || {
+                    loop {
+                        let (msg, addr) = receiver.recv().unwrap();
+                        let bytes = msg.to_bytes().unwrap();
+                        sock_resp.send(&bytes, &addr).unwrap();
+                    }
+                });
+            }
+
             loop {
                 let (msg, addr) = try!(Message::from_udp(&mut sock));
-                let ret = handle_request(msg);
-                let resp = try!(ret.to_bytes());
-                try!(sock.send(&resp, &addr));
+                handle_request_async(msg, addr, sender.clone());
             }
         });
     }).unwrap();
