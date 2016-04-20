@@ -1,23 +1,22 @@
 extern crate env_logger;
+extern crate mio;
 #[macro_use] extern crate mioco;
 extern crate trust_dns;
 extern crate rand;
 #[macro_use] extern crate quick_error;
 #[macro_use] extern crate log;
 
-mod future;
 mod utils;
 
 use std::net::{SocketAddr, SocketAddrV4, IpAddr};
 
 use mioco::udp::UdpSocket;
+use mioco::tcp::TcpListener;
 use mioco::mio::Ipv4Addr;
-use mioco::timer::Timer;
 use mioco::sync::mpsc::{Sender, channel};
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode};
 
-use utils::{Result, Error, CloneExt, MessageExt};
-use future::Future;
+use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future};
 
 const QUERY_TIMEOUT: i64 = 5000;
 
@@ -34,21 +33,9 @@ fn query(q: Query, server: Ipv4Addr) -> Result<Message> {
     let mut sock = try!(UdpSocket::v4());
     let target = SocketAddr::new(IpAddr::V4(server), 53);
     try!(sock.send(&msg_data, &target));
-    let mut timer = Timer::new();
-    timer.set_timeout(QUERY_TIMEOUT);
     let mut buf = [0u8; 1024 * 16];
     loop {
-        select! {
-            r:sock => { /* Fall below */ },
-            r:timer => {
-                return Err(std::io::ErrorKind::TimedOut.into());
-            },
-        };
-        let result = try!(sock.try_recv(&mut buf));
-        if result.is_none() {
-            continue;
-        }
-        let (len, addr) = result.unwrap();
+        let (len, addr) = try!(sock.with_timeout(QUERY_TIMEOUT).recv(&mut buf));
         if addr != target {
             warn!("Q[{}][{}] Response from unexpected server: {}",
                   server, msg.get_id(), addr);
@@ -64,7 +51,7 @@ fn query(q: Query, server: Ipv4Addr) -> Result<Message> {
         debug!("A[{}][{}] {:?} {} answer(s)",
            server, resp.get_id(), resp.get_response_code(), resp.get_answers().len());
         return Ok(resp);
-    };
+    }
 }
 fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
     let mut futures = servers.iter()
@@ -102,25 +89,41 @@ fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
     }
 }
 
-fn handle_request(msg: Message) -> Message {
+fn handle_request(msg: Message, should_truncate: bool) -> Vec<u8> {
     let mut ret : Message = msg.new_resp();
     ret.recursion_available(true);
     if msg.get_queries().len() != 1 {
         // For simplicity, only support one question
         ret.response_code(ResponseCode::Refused);
-        return ret;
+        return ret.to_bytes().unwrap();
     }
     // TODO: EDNS?
     match query_multiple(&msg.get_queries()[0], &[Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(8, 8, 4, 4)]) {
         Ok(resp) => { ret.copy_resp_from(&resp); },
         Err(_)   => { ret.response_code(ResponseCode::ServFail); },
     };
-    ret
+    let bytes = ret.to_bytes().unwrap();
+    if should_truncate && bytes.len() > (msg.get_max_payload() as usize) {
+        return ret.truncate().to_bytes().unwrap();
+    }
+    bytes
 }
-fn handle_request_async(msg: Message, addr: SocketAddr, sender: Sender<(Message, SocketAddr)>) {
+fn handle_request_async(msg: Message, addr: SocketAddr, sender: Sender<(Vec<u8>, SocketAddr)>) {
     mioco::spawn(move || {
-        sender.send((handle_request(msg), addr)).unwrap();
+        sender.send((handle_request(msg, true), addr)).unwrap();
     });
+}
+fn serve_tcp(addr: SocketAddr) -> Result<()> {
+    unimplemented!();
+    let mut listener = try!(TcpListener::bind(&addr));
+    mioco::spawn(move || {
+        loop {
+            let mut sock = listener.accept().unwrap();
+            mioco::spawn(move || {
+            });
+        }
+    });
+    Ok(())
 }
 
 fn main() {
@@ -136,13 +139,12 @@ fn main() {
             let mut sock : UdpSocket = UdpSocket::v4().unwrap();
             sock.bind(&addr).unwrap();
 
-            let (sender, receiver) = channel::<(Message, SocketAddr)>();
+            let (sender, receiver) = channel::<(Vec<u8>, SocketAddr)>();
             {
                 let mut sock_resp = sock.try_clone().unwrap();
                 mioco::spawn(move || {
                     loop {
-                        let (msg, addr) = receiver.recv().unwrap();
-                        let bytes = msg.to_bytes().unwrap();
+                        let (bytes, addr) = receiver.recv().unwrap();
                         match sock_resp.send(&bytes, &addr) {
                             Ok(_) => {},
                             Err(x) => warn!("Fail to send reply to {}: {:?}", addr, x),

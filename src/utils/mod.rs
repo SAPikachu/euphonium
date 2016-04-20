@@ -4,11 +4,17 @@ use std::convert::From;
 
 use std::net::SocketAddr;
 
+use mioco::{Evented};
 use mioco::udp::UdpSocket;
 use trust_dns::op::{Message, Query, MessageType};
 use trust_dns::error::{DecodeError, EncodeError};
 use trust_dns::rr::RecordType;
 use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
+
+pub mod future;
+pub mod with_timeout;
+pub use self::with_timeout::WithTimeout;
+pub use self::future::Future;
 
 quick_error! {
     #[derive(Debug)]
