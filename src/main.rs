@@ -111,7 +111,7 @@ fn handle_request(msg: Message) -> Message {
         return ret;
     }
     // TODO: EDNS?
-    match query_multiple(&msg.get_queries()[0], &[Ipv4Addr::new(1, 8, 8, 8), Ipv4Addr::new(1, 8, 4, 4)]) {
+    match query_multiple(&msg.get_queries()[0], &[Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(8, 8, 4, 4)]) {
         Ok(resp) => { ret.copy_resp_from(&resp); },
         Err(_)   => { ret.response_code(ResponseCode::ServFail); },
     };
@@ -143,7 +143,10 @@ fn main() {
                     loop {
                         let (msg, addr) = receiver.recv().unwrap();
                         let bytes = msg.to_bytes().unwrap();
-                        sock_resp.send(&bytes, &addr).unwrap();
+                        match sock_resp.send(&bytes, &addr) {
+                            Ok(_) => {},
+                            Err(x) => warn!("Fail to send reply to {}: {:?}", addr, x),
+                        };
                     }
                 });
             }
