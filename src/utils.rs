@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use mioco::udp::UdpSocket;
 use trust_dns::op::{Message, Query, MessageType};
 use trust_dns::error::{DecodeError, EncodeError};
+use trust_dns::rr::RecordType;
 use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
 
 quick_error! {
@@ -88,6 +89,10 @@ impl MessageExt for Message {
         self.add_all_answers(other.get_answers());
         self.add_all_name_servers(other.get_name_servers());
         for rec in other.get_additional() {
+            if rec.get_rr_type() == RecordType::OPT {
+                // RFC 2671 4.1: OPT should never be cached nor forwarded
+                continue;
+            }
             self.add_additional(rec.clone());
         }
     }
