@@ -2,6 +2,7 @@
 name = "euphonium"
 version = "0.1.0"
 dependencies = [
+ "byteorder 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -27,6 +28,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "bitflags"
 version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "byteorder"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
@@ -160,7 +166,7 @@ dependencies = [
 [[package]]
 name = "mioco"
 version = "0.4.1"
-source = "git+https://github.com/dpc/mioco.git#666601142cca8a394723e0a76e25aae85b14c558"
+source = "git+https://github.com/dpc/mioco.git#41b6636c9deae0ccbb582cb2ad291472b2e2a0a8"
 dependencies = [
  "context 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -423,7 +429,7 @@ name = "unreachable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "void 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "void 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -442,7 +448,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "void"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]

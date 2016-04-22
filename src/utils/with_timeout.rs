@@ -18,14 +18,16 @@ fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Tim
         }
         let ret = mioco::select_wait();
         if ret.id() == timer.id() {
-            if timer.try_read().is_some() {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "Timed out"));
+            match timer.try_read() {
+                Some(_) => {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "Timed out"));
+                },
+                None => { continue; /* Spurious wakeup */ }
             }
-            continue;
         }
         match try_fn(inner) {
             Ok(Some(x)) => { return Ok(x); },
-            Ok(None) => { },
+            Ok(None) => { /* Spurious wakeup */ },
             Err(e) => { return Err(e); },
         };
     }
@@ -45,6 +47,9 @@ impl<'a, T> WithTimeoutState<'a, T> where T: 'a + Evented {
 impl<'a> WithTimeoutState<'a, UdpSocket> {
     pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         self.invoke(mioco::RW::read(), move |x| x.try_recv(buf))
+    }
+    pub fn send(&mut self, buf: &[u8], target: &SocketAddr) -> io::Result<usize>  {
+        self.invoke(mioco::RW::write(), move |x| x.try_send(buf, target))
     }
 }
 impl<'a, T> io::Read for WithTimeoutState<'a, MioAdapter<T>> where T: 'static + mio::Evented + mio::TryRead {
