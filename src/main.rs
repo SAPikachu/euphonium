@@ -10,6 +10,9 @@ extern crate byteorder;
 mod utils;
 mod transport;
 
+#[cfg(test)]
+mod tests;
+
 use std::net::{SocketAddr, SocketAddrV4, IpAddr};
 use std::cmp::max;
 
@@ -217,11 +220,20 @@ fn serve_udp(addr: &SocketAddr) -> Result<JoinHandle<()>> {
     ))
 }
 
+fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
+    where F: FnOnce() -> T,
+          F: Send + 'static,
+          T: Send + 'static
+{
+    let mut config = mioco::Config::new();
+    config.set_catch_panics(false);
+    mioco::Mioco::new_configured(config).start(f)
+}
 fn main() {
     env_logger::init().unwrap();
     println!("Hello, world!");
 
-    mioco::start(move || {
+    mioco_config_start(move || {
         let ip = Ipv4Addr::new(0, 0, 0, 0);
         let port = 5354;
         let addr = SocketAddr::V4(SocketAddrV4::new(ip, port));

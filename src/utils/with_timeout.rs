@@ -43,7 +43,12 @@ impl TcpStreamExt for TcpStream {
         let mut ret = MioAdapter::new(mio_stream);
         let mut timer = Timer::new();
         timer.set_timeout(timeout_ms);
-        try!(invoke_with_timeout(&mut ret, mioco::RW::write(), &mut timer, |_| Ok(Some(()))));
+        try!(invoke_with_timeout(
+            &mut ret,
+            mioco::RW::write(),
+            &mut timer,
+            |x| x.take_socket_error().map(|r| Some(r))
+        ));
         Ok(ret)
     }
 }
