@@ -33,6 +33,10 @@ quick_error! {
             from()
             description(err.description())
         }
+        ChannelRecv(err: std::sync::mpsc::RecvError) {
+            from()
+            description(err.description())
+        }
     }
 }
 
