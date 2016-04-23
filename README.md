@@ -1,5 +1,7 @@
 # euphonium
 
+![Kumiko](https://imagehost-ssl.pikapika.me/kumiko.jpg)
+
 A DNS server written in Rust. Currently in early-alpha stage. This is mostly a toy project used to learn Rust, and not supposed to be used in production (at this moment).
 
 ## Planned features and ideas
