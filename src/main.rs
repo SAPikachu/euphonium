@@ -73,6 +73,7 @@ fn query(q: Query, addr: Ipv4Addr, enable_edns: bool) -> Result<Message> {
                 // Try TCP
                 let tcp_result = TcpStream::connect_with_timeout(&target, QUERY_TIMEOUT)
                 .map_err(|e| e.into())
+                .and_then(|stream| stream.set_nodelay(true).or(Ok(())).map(|_| stream))
                 .and_then(|stream| query_core(
                     msg.get_queries()[0].clone(),
                     stream.with_timeout(QUERY_TIMEOUT).bound(Some(&target)),
@@ -197,6 +198,7 @@ fn serve_tcp(addr: &SocketAddr) -> Result<JoinHandle<()>> {
     Ok(mioco::spawn(move || {
         loop {
             let sock = listener.accept().expect("Failed to accept TCP socket");
+            sock.set_nodelay(true).unwrap_or(());
             let sock_clone = sock.try_clone().expect("Failed to clone TCP socket");
             serve_transport_async(
                 sock.with_resetting_timeout(QUERY_TIMEOUT),
