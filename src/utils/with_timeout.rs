@@ -6,6 +6,7 @@ use mioco;
 use mioco::{Evented, MioAdapter};
 use mioco::timer::Timer;
 use mioco::udp::UdpSocket;
+use mioco::tcp::TcpStream;
 
 fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Timer, mut try_fn: F) -> io::Result<TRet> where
     T: Evented,
@@ -30,6 +31,20 @@ fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Tim
             Ok(None) => { /* Spurious wakeup */ },
             Err(e) => { return Err(e); },
         };
+    }
+}
+
+pub trait TcpStreamExt where Self: Sized {
+    fn connect_with_timeout(addr: &SocketAddr, timeout_ms: i64) -> io::Result<Self>;
+}
+impl TcpStreamExt for TcpStream {
+    fn connect_with_timeout(addr: &SocketAddr, timeout_ms: i64) -> io::Result<Self> {
+        let mio_stream = try!(mio::tcp::TcpStream::connect(addr));
+        let mut ret = MioAdapter::new(mio_stream);
+        let mut timer = Timer::new();
+        timer.set_timeout(timeout_ms);
+        try!(invoke_with_timeout(&mut ret, mioco::RW::write(), &mut timer, |_| Ok(Some(()))));
+        Ok(ret)
     }
 }
 

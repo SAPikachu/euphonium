@@ -15,12 +15,13 @@ use std::cmp::max;
 
 use mioco::JoinHandle;
 use mioco::udp::UdpSocket;
-use mioco::tcp::TcpListener;
+use mioco::tcp::{TcpListener, TcpStream};
 use mioco::mio::Ipv4Addr;
 use mioco::sync::mpsc::{channel};
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 
 use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future};
+use utils::with_timeout::TcpStreamExt;
 use transport::{DnsTransport, BoundDnsTransport};
 
 const QUERY_TIMEOUT: i64 = 5000;
@@ -66,7 +67,24 @@ fn query_core<T: DnsTransport>(q: Query, mut transport: BoundDnsTransport<T>, en
 fn query(q: Query, addr: Ipv4Addr, enable_edns: bool) -> Result<Message> {
     let target = SocketAddr::new(IpAddr::V4(addr), 53);
     let mut transport = try!(UdpSocket::v4()).with_timeout(QUERY_TIMEOUT);
-    query_core(q, transport.bound(Some(&target)), enable_edns)
+    match query_core(q, transport.bound(Some(&target)), enable_edns) {
+        Ok(msg) => {
+            if msg.is_truncated() {
+                // Try TCP
+                let tcp_result = TcpStream::connect_with_timeout(&target, QUERY_TIMEOUT)
+                .map_err(|e| e.into())
+                .and_then(|stream| query_core(
+                    msg.get_queries()[0].clone(),
+                    stream.with_timeout(QUERY_TIMEOUT).bound(Some(&target)),
+                    enable_edns,
+                ));
+                Ok(tcp_result.unwrap_or(msg))
+            } else {
+                Ok(msg)
+            }
+        },
+        Err(e) => Err(e),
+    }
 }
 fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
     let mut futures = servers.iter()
