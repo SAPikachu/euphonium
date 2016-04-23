@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["SAPikachu <sapikachu@gmail.com>"]
 
 [dependencies]
+clippy = "*"
 mioco = { git = "https://github.com/dpc/mioco.git" }
 mio = "*"
 env_logger = "*"

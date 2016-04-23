@@ -1,3 +1,6 @@
+#![feature(plugin)]
+#![plugin(clippy)]
+
 extern crate env_logger;
 extern crate mio;
 #[macro_use] extern crate mioco;
@@ -76,7 +79,9 @@ fn query(q: Query, addr: Ipv4Addr, enable_edns: bool) -> Result<Message> {
                 // Try TCP
                 let tcp_result = TcpStream::connect_with_timeout(&target, QUERY_TIMEOUT)
                 .map_err(|e| e.into())
-                .and_then(|stream| stream.set_nodelay(true).or(Ok(())).map(|_| stream))
+                .and_then(|stream| stream.set_nodelay(true)
+                                         .or_else(|_| Ok(()))
+                                         .map(|_| stream))
                 .and_then(|stream| query_core(
                     msg.get_queries()[0].clone(),
                     stream.with_timeout(QUERY_TIMEOUT).bound(Some(&target)),
@@ -101,7 +106,7 @@ fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
     loop {
         let result_index = Future::wait_any(&mut futures);
         let result = futures.remove(result_index).consume();
-        let mut should_return = futures.len() == 0;
+        let mut should_return = futures.is_empty();
         match result {
             Ok(ref msg) => {
                 match msg.get_response_code() {
@@ -157,6 +162,7 @@ fn handle_request(msg: Message, should_truncate: bool) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+#[allow(similar_names)]
 fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, on_error: F) -> JoinHandle<()>
     where TRecv: DnsTransport + Send + 'static,
           TSend: DnsTransport + Send + 'static,
@@ -230,7 +236,7 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
     mioco::Mioco::new_configured(config).start(f)
 }
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init().expect("What the ...?");
     println!("Hello, world!");
 
     mioco_config_start(move || {

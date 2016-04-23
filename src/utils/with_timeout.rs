@@ -47,7 +47,7 @@ impl TcpStreamExt for TcpStream {
             &mut ret,
             mioco::RW::write(),
             &mut timer,
-            |x| x.take_socket_error().map(|r| Some(r))
+            |x| x.take_socket_error().map(Some)
         ));
         Ok(ret)
     }
