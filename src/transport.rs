@@ -1,5 +1,6 @@
 use std::io;
 use std::io::{Read, Write};
+use std::fmt;
 
 use std::net::SocketAddr;
 
@@ -20,6 +21,7 @@ pub trait DnsTransport {
     /// Sends a DNS message via this transport. `addr` is required for UDP transport, and ignored
     /// for TCP transport.
     fn send_msg_bytes(&mut self, buf: &[u8], addr: Option<&SocketAddr>) -> io::Result<()>;
+    fn transport_name() -> &'static str;
     fn should_truncate() -> bool { true }
     fn recv_msg(&mut self, addr: Option<&SocketAddr>) -> Result<(Message, Option<SocketAddr>)> {
         let (bytes, addr) = try!(self.recv_msg_bytes(addr));
@@ -29,6 +31,33 @@ pub trait DnsTransport {
     fn send_msg(&mut self, msg: &Message, addr: Option<&SocketAddr>) -> Result<()> {
         let bytes = try!(msg.to_bytes());
         self.send_msg_bytes(&bytes, addr).map_err(|e| e.into())
+    }
+    fn bound<'a>(&'a mut self, addr: Option<&'a SocketAddr>) -> BoundDnsTransport<'a, Self> {
+        BoundDnsTransport {
+            transport: self,
+            addr: addr,
+        }
+    }
+}
+#[derive(Debug)]
+pub struct BoundDnsTransport<'a, T: ?Sized> where T: DnsTransport + 'a {
+    transport: &'a mut T,
+    addr: Option<&'a SocketAddr>,
+}
+impl<'a, T> BoundDnsTransport<'a, T> where T: DnsTransport + 'a {
+    pub fn recv_msg(&mut self) -> Result<(Message, Option<SocketAddr>)> {
+        self.transport.recv_msg(self.addr)
+    }
+    pub fn send_msg(&mut self, msg: &Message) -> Result<()> {
+        self.transport.send_msg(msg, self.addr)
+    }
+}
+impl<'a, T> fmt::Display for BoundDnsTransport<'a, T> where T: DnsTransport + 'a {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}({})", T::transport_name(), match self.addr {
+            None => "any".into(),
+            Some(ref x) => format!("{}", **x),
+        })
     }
 }
 macro_rules! impl_tcp_transport {
@@ -46,13 +75,14 @@ macro_rules! impl_tcp_transport {
             try!(self.write_u16::<NetworkEndian>(buf.len() as u16));
             self.write_all(buf)
         }
+        fn transport_name() -> &'static str { "tcp" }
         fn should_truncate() -> bool { false }
     }
 }
 impl DnsTransport for TcpStream {
     impl_tcp_transport!();
 }
-impl<'a> DnsTransport for WithTimeoutState<'a, TcpStream> {
+impl DnsTransport for WithTimeoutState<TcpStream> {
     impl_tcp_transport!();
 }
 
@@ -85,11 +115,12 @@ macro_rules! impl_udp_transport {
                 Err(e) => Err(e),
             }
         }
+        fn transport_name() -> &'static str { "udp" }
     }
 }
 impl DnsTransport for UdpSocket {
     impl_udp_transport!();
 }
-impl<'a> DnsTransport for WithTimeoutState<'a, UdpSocket> {
+impl DnsTransport for WithTimeoutState<UdpSocket> {
     impl_udp_transport!();
 }

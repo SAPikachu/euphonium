@@ -21,7 +21,7 @@ use mioco::sync::mpsc::{channel};
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 
 use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future};
-use transport::DnsTransport;
+use transport::{DnsTransport, BoundDnsTransport};
 
 const QUERY_TIMEOUT: i64 = 5000;
 const EDNS_VER: u8 = 0;
@@ -29,7 +29,7 @@ const EDNS_MAX_PAYLOAD: u16 = 1200;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
-fn query(q: Query, server: Ipv4Addr, enable_edns: bool) -> Result<Message> {
+fn query_core<T: DnsTransport>(q: Query, mut transport: BoundDnsTransport<T>, enable_edns: bool) -> Result<Message> {
     let mut msg : Message = Message::new();
     msg.message_type(MessageType::Query);
     msg.id(rand::random());
@@ -43,35 +43,30 @@ fn query(q: Query, server: Ipv4Addr, enable_edns: bool) -> Result<Message> {
         msg.set_edns(edns);
     }
     debug!("Q[{}][{}] {} {:?} {:?}",
-           server, msg.get_id(), q.get_name(), q.get_query_type(), q.get_query_class());
+           transport, msg.get_id(), q.get_name(), q.get_query_type(), q.get_query_class());
     msg.add_query(q);
-    let msg_data = try!(msg.to_bytes());
-    let mut sock = try!(UdpSocket::v4());
-    let target = SocketAddr::new(IpAddr::V4(server), 53);
-    try!(sock.send(&msg_data, &target));
-    let mut buf = [0u8; 1024 * 16];
+    try!(transport.send_msg(&msg));
     loop {
-        let (len, addr) = try!(sock.with_timeout(QUERY_TIMEOUT).recv(&mut buf));
-        if addr != target {
-            warn!("Q[{}][{}] Response from unexpected server: {}",
-                  server, msg.get_id(), addr);
-            continue
-        }
-        let resp = try!(Message::from_bytes(&buf[0..len]));
+        let (resp, _) = try!(transport.recv_msg());
         if ! resp.is_resp_for(&msg) {
             warn!("Q[{}][{}] Invalid response: {:?}",
-                  server, msg.get_id(), resp);
-            continue
+                  transport, msg.get_id(), resp);
+            continue;
         }
         if resp.get_response_code() == ResponseCode::FormErr && enable_edns {
             // Maybe the server doesn't implement EDNS?
-            return query(msg.get_queries()[0].clone(), server, false);
+            return query_core(msg.get_queries()[0].clone(), transport, false);
         }
         // TODO: Validate response, handle truncated message
         debug!("A[{}][{}] {:?} {} answer(s)",
-           server, resp.get_id(), resp.get_response_code(), resp.get_answers().len());
+           transport, resp.get_id(), resp.get_response_code(), resp.get_answers().len());
         return Ok(resp);
     }
+}
+fn query(q: Query, addr: Ipv4Addr, enable_edns: bool) -> Result<Message> {
+    let target = SocketAddr::new(IpAddr::V4(addr), 53);
+    let mut transport = try!(UdpSocket::v4()).with_timeout(QUERY_TIMEOUT);
+    query_core(q, transport.bound(Some(&target)), enable_edns)
 }
 fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
     let mut futures = servers.iter()
@@ -186,7 +181,9 @@ fn serve_tcp(addr: &SocketAddr) -> Result<JoinHandle<()>> {
             let sock = listener.accept().expect("Failed to accept TCP socket");
             let sock_clone = sock.try_clone().expect("Failed to clone TCP socket");
             serve_transport_async(
-                sock, sock_clone, |e| trace!("Client TCP connection is broken: {:?}", e)
+                sock.with_resetting_timeout(QUERY_TIMEOUT),
+                sock_clone.with_resetting_timeout(QUERY_TIMEOUT),
+                |e| trace!("Client TCP connection is broken: {:?}", e)
             );
         }
     }))

@@ -33,18 +33,28 @@ fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Tim
     }
 }
 
-pub struct WithTimeoutState<'a, T> where T: 'a + Evented {
-    inner: &'a mut T,
-    timer: Timer,
+pub struct WithTimeoutState<T> where T: Evented {
+    inner: T,
+    timer: Option<Timer>,
+    timeout_ms: i64,
 }
-impl<'a, T> WithTimeoutState<'a, T> where T: 'a + Evented {
+impl<T> WithTimeoutState<T> where T: Evented {
+    fn create_timer(&self) -> Timer {
+        let mut timer = Timer::new();
+        timer.set_timeout(self.timeout_ms);
+        timer
+    }
     fn invoke<F, TRet>(&mut self, rw: mioco::RW, try_fn: F) -> io::Result<TRet> where
         F: FnMut(&mut T) -> io::Result<Option<TRet>>,
     {
-        invoke_with_timeout(self.inner, rw, &mut self.timer, try_fn)
+        let mut timer = match self.timer {
+            Some(_) => None,
+            None => Some(self.create_timer()),
+        };
+        invoke_with_timeout(&mut self.inner, rw, timer.as_mut().or(self.timer.as_mut()).unwrap(), try_fn)
     }
 }
-impl<'a> WithTimeoutState<'a, UdpSocket> {
+impl WithTimeoutState<UdpSocket> {
     pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         self.invoke(mioco::RW::read(), move |x| x.try_recv(buf))
     }
@@ -52,12 +62,12 @@ impl<'a> WithTimeoutState<'a, UdpSocket> {
         self.invoke(mioco::RW::write(), move |x| x.try_send(buf, target))
     }
 }
-impl<'a, T> io::Read for WithTimeoutState<'a, MioAdapter<T>> where T: 'static + mio::Evented + mio::TryRead {
+impl<T> io::Read for WithTimeoutState<MioAdapter<T>> where T: 'static + mio::Evented + mio::TryRead {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.invoke(mioco::RW::read(), move |x| x.try_read(buf))
     }
 }
-impl<'a, T> io::Write for WithTimeoutState<'a, MioAdapter<T>> where T: 'static + mio::Evented + mio::TryWrite {
+impl<T> io::Write for WithTimeoutState<MioAdapter<T>> where T: 'static + mio::Evented + mio::TryWrite {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.invoke(mioco::RW::write(), move |x| x.try_write(buf))
     }
@@ -65,16 +75,25 @@ impl<'a, T> io::Write for WithTimeoutState<'a, MioAdapter<T>> where T: 'static +
         self.inner.flush()
     }
 }
-pub trait WithTimeout<'a, T> where T: 'a + Evented {
-    fn with_timeout(&'a mut self, timeout_ms: i64) -> WithTimeoutState<'a, T>;
+pub trait WithTimeout<T> where T: Evented, Self: Sized {
+    fn with_timeout_core(self, timeout_ms: i64, reset_before_invoke: bool) -> WithTimeoutState<T>;
+    fn with_timeout(self, timeout_ms: i64) -> WithTimeoutState<T> {
+        self.with_timeout_core(timeout_ms, false)
+    }
+    fn with_resetting_timeout(self, timeout_ms: i64) -> WithTimeoutState<T> {
+        self.with_timeout_core(timeout_ms, true)
+    }
 }
-impl<'a, T> WithTimeout<'a, T> for T where T: 'a + Evented {
-    fn with_timeout(&'a mut self, timeout_ms: i64) -> WithTimeoutState<'a, T> {
-        let mut timer = Timer::new();
-        timer.set_timeout(timeout_ms);
-        WithTimeoutState {
+impl<T> WithTimeout<T> for T where T: Evented {
+    fn with_timeout_core(self, timeout_ms: i64, reset_before_invoke: bool) -> WithTimeoutState<T> {
+        let mut ret = WithTimeoutState {
             inner: self,
-            timer: timer,
+            timer: None,
+            timeout_ms: timeout_ms,
+        };
+        if ! reset_before_invoke {
+            ret.timer = Some(ret.create_timer());
         }
+        ret
     }
 }
