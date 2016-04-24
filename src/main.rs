@@ -25,7 +25,7 @@ use mioco::udp::UdpSocket;
 use mioco::tcp::{TcpListener};
 use mioco::mio::Ipv4Addr;
 use mioco::sync::mpsc::{channel};
-use trust_dns::op::{Message, ResponseCode, Edns};
+use trust_dns::op::{Message, ResponseCode, Edns, OpCode};
 use trust_dns::rr::DNSClass;
 
 use utils::{Result, Error, CloneExt, MessageExt, WithTimeout};
@@ -50,7 +50,7 @@ fn handle_request(msg: Message, should_truncate: bool) -> Result<Vec<u8>> {
             return ret.to_bytes();
         }
     }
-    if msg.get_queries().len() != 1 {
+    if msg.get_queries().len() != 1 || msg.get_op_code() != OpCode::Query {
         // For simplicity, only support one question
         ret.response_code(ResponseCode::Refused);
         return ret.to_bytes();
