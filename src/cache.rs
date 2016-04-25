@@ -18,16 +18,14 @@ pub struct EntryPlain {
     records: HashMap<RecordType, RecordTypeEntry>,
 }
 impl EntryPlain {
-    pub fn lookup(&self, t: RecordType) -> Option<&Message> {
-        self.records.get(&t).map_or(None, |x| x.message.as_ref())
+    pub fn lookup(&self, t: &RecordType) -> Option<&Message> {
+        self.records.get(t).map_or(None, |x| x.message.as_ref())
     }
     pub fn update(&mut self, msg: &Message) {
         // TODO: Validate message before updating
         // TODO: Expiration
-        let mut cached = Message::new();
-        cached.copy_resp_from(msg);
         self.records.insert(msg.get_queries()[0].get_query_type(), RecordTypeEntry {
-            message: Some(cached),
+            message: Some(msg.clone_resp()),
             expiration: None,
         });
     }
@@ -39,12 +37,21 @@ pub struct CachePlain {
 pub type CacheInst = Mutex<CachePlain>; 
 
 impl CachePlain {
-    pub fn lookup(&mut self, key: Key) -> Entry {
-        self.entries.entry(key).or_insert_with(Entry::default).clone()
+    pub fn lookup(&mut self, key: &Key) -> Entry {
+        match self.entries.get(key) {
+            Some(x) => { return x.clone(); },
+            None => { /* Create the entry below */ },
+        }
+        self.entries.entry(key.clone()).or_insert_with(Entry::default).clone()
     }
 }
 pub struct Cache {
     inst: CacheInst,
+}
+impl Cache {
+    pub fn lookup(&self, key: &Key) -> Entry {
+        self.inst.lock().expect("The mutex shouldn't be poisoned").lookup(key)
+    }
 }
 impl Default for Cache {
     fn default() -> Self {

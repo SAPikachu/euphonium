@@ -40,9 +40,12 @@ fn handle_request(resolver: &Resolver, msg: Message, should_truncate: bool) -> R
         ret.response_code(ResponseCode::NotImp);
         return ret.to_bytes();
     }
-    match resolver.resolve(&msg.get_queries()[0]) {
-        Ok(resp) => { ret.copy_resp_from(&resp); },
-        Err(_)   => { ret.response_code(ResponseCode::ServFail); },
+    match resolver.resolve(&mut ret) {
+        Ok(_) => { /* Message is filled with answers */ },
+        Err(e) => {
+            warn!("Resolver returned error: {:?}", e);
+            ret.response_code(ResponseCode::ServFail);
+        },
     };
     let bytes = try!(ret.to_bytes());
     if should_truncate && bytes.len() > (msg.get_max_payload() as usize) {

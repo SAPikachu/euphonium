@@ -16,7 +16,21 @@ pub struct Resolver {
 }
 pub type RcResolver = Arc<Resolver>;
 impl Resolver {
-    pub fn resolve(&self, q: &Query) -> Result<Message> {
-        query_multiple(q, &[Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(8, 8, 4, 4)]) 
+    pub fn resolve(&self, msg: &mut Message) -> Result<()> {
+        debug_assert!(msg.get_queries().len() == 1);
+        debug_assert!(msg.get_answers().is_empty());
+        debug_assert!(msg.get_name_servers().is_empty());
+        let entry = self.cache.lookup(msg.get_queries()[0].get_name());
+        match entry.lock().unwrap().lookup(&msg.get_queries()[0].get_query_type()) {
+            None => {},
+            Some(cached) => {
+                msg.copy_resp_from(cached);
+                return Ok(());
+            },
+        };
+        let resp = try!(query_multiple(&msg.get_queries()[0], &[Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(8, 8, 4, 4)]));
+        entry.lock().unwrap().update(&resp);
+        msg.copy_resp_from(&resp);
+        Ok(())
     }
 }
