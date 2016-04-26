@@ -2,6 +2,12 @@
 name = "euphonium"
 version = "0.1.0"
 authors = ["SAPikachu <sapikachu@gmail.com>"]
+description = "Recursive DNS resolver"
+keywords = ["dns", "recursive", "mioco"]
+license = "MPL-2.0"
+homepage = "https://github.com/SAPikachu/euphonium"
+repository = "https://github.com/SAPikachu/euphonium"
+readme = "README.md"
 
 [dependencies]
 clippy = "*"
