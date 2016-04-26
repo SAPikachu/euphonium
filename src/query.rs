@@ -1,10 +1,9 @@
-use std::net::{SocketAddr, IpAddr};
+use std::net::{SocketAddr, IpAddr, ToSocketAddrs};
 use std::io;
 
 use rand;
 use mioco::udp::UdpSocket;
 use mioco::tcp::{TcpStream};
-use mioco::mio::Ipv4Addr;
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 
 use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future};
@@ -50,9 +49,15 @@ fn query_core<T: DnsTransport>(q: Query, mut transport: BoundDnsTransport<T>, en
         return Ok(resp);
     }
 }
-pub fn query(q: Query, addr: Ipv4Addr, enable_edns: bool) -> Result<Message> {
-    let target = SocketAddr::new(IpAddr::V4(addr), 53);
-    let mut transport = try!(UdpSocket::v4()).with_timeout(QUERY_TIMEOUT);
+fn get_bind_addr(target: &IpAddr) -> SocketAddr {
+    (match *target {
+        IpAddr::V4(_) => "0.0.0.0:0",
+        IpAddr::V6(_) => "[::]:0",
+    }).to_socket_addrs().unwrap().next().unwrap()
+}
+pub fn query(q: Query, addr: IpAddr, enable_edns: bool) -> Result<Message> {
+    let target = try!(try!((addr, 53u16).to_socket_addrs()).next().ok_or::<Error>(io::ErrorKind::InvalidInput.into()));
+    let mut transport = try!(UdpSocket::bound(&get_bind_addr(&addr))).with_timeout(QUERY_TIMEOUT);
     match query_core(q, transport.bound(Some(&target)), enable_edns) {
         Ok(msg) => {
             if msg.is_truncated() {
@@ -75,7 +80,7 @@ pub fn query(q: Query, addr: Ipv4Addr, enable_edns: bool) -> Result<Message> {
         Err(e) => Err(e),
     }
 }
-pub fn query_multiple(q: &Query, servers: &[Ipv4Addr]) -> Result<Message> {
+pub fn query_multiple(q: &Query, servers: &[IpAddr]) -> Result<Message> {
     let mut futures = servers.iter()
         .cloned()
         .map(move |server| {

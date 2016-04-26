@@ -13,6 +13,7 @@ extern crate byteorder;
 mod utils;
 mod transport;
 mod cache;
+mod nscache;
 mod query;
 mod serve;
 mod resolver;
