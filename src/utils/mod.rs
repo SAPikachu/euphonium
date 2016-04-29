@@ -12,6 +12,8 @@ use trust_dns::error::{DecodeError, EncodeError};
 use trust_dns::rr::RecordType;
 use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
 
+use ::resolver::ErrorKind as ResolverErrorKind;
+
 pub mod future;
 pub mod with_timeout;
 pub use self::with_timeout::WithTimeout;
@@ -36,6 +38,9 @@ quick_error! {
         ChannelRecv(err: std::sync::mpsc::RecvError) {
             from()
             description(err.description())
+        }
+        ResolverError(kind: ResolverErrorKind) {
+            from()
         }
     }
 }

@@ -80,16 +80,21 @@ pub fn query(q: Query, addr: IpAddr, enable_edns: bool) -> Result<Message> {
         Err(e) => Err(e),
     }
 }
-pub fn query_multiple(q: &Query, servers: &[IpAddr]) -> Result<Message> {
-    let mut futures = servers.iter()
-        .cloned()
-        .map(move |server| {
-            let qc = q.clone();
-            Future::from_fn(move || query(qc, server, true))
-        })
-        .collect::<Vec<Future<Result<Message>>>>();
+pub fn query_multiple_build_futures(q: &Query, servers: &[IpAddr]) -> Vec<Future<Result<Message>>> {
+    servers.iter()
+    .cloned()
+    .map(move |server| {
+        let qc = q.clone();
+        Future::from_fn(move || query(qc, server, true))
+    })
+    .collect()
+}
+pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>) -> Result<Message> {
+    if futures.is_empty() {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
     loop {
-        let result_index = Future::wait_any(&mut futures);
+        let result_index = Future::wait_any(futures);
         let result = futures.remove(result_index).consume();
         let mut should_return = futures.is_empty();
         match result {
@@ -104,14 +109,18 @@ pub fn query_multiple(q: &Query, servers: &[IpAddr]) -> Result<Message> {
                 }
             },
             Err(Error::Io(ref err)) if err.kind() == io::ErrorKind::TimedOut => {
-                debug!("{:?} timed out", q);
+                debug!("Timed out");
             },
             Err(ref err) => {
-                debug!("{:?} returned error {:?}", q, err);
+                debug!("Error {:?}", err);
             },
         };
         if should_return {
             return result;
         }
     }
+}
+pub fn query_multiple(q: &Query, servers: &[IpAddr]) -> Result<Message> {
+    let mut futures = query_multiple_build_futures(q, servers);
+    query_multiple_handle_futures(&mut futures)
 }

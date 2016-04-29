@@ -12,14 +12,21 @@ use utils::MessageExt;
 
 pub struct NsItem {
     pub ip: IpAddr,
+    pub name: Name, // FIXME: Is this really useful?
 }
 #[derive(Default)]
 pub struct NsCacheEntry {
-    pub nameservers: HashMap<Name, NsItem>,
+    nameservers: HashMap<IpAddr, NsItem>,
 }
 impl NsCacheEntry {
     pub fn to_addrs(&self) -> Vec<IpAddr> {
-        self.nameservers.values().map(|x| x.ip).collect()
+        self.nameservers.keys().cloned().collect()
+    }
+    pub fn add_ns(&mut self, ip: IpAddr, domain: Name) {
+        self.nameservers.entry(ip.clone()).or_insert_with(move || NsItem {
+            ip: ip,
+            name: domain,
+        });
     }
 }
 #[derive(Default)]
@@ -30,10 +37,14 @@ impl NsCachePlain {
     pub fn lookup(&self, name: &Name) -> Option<&NsCacheEntry> {
         self.entries.get(name)
     }
+    pub fn lookup_or_insert(&mut self, name: &Name) -> &mut NsCacheEntry {
+        self.entries.entry(name.clone()).or_insert_with(|| NsCacheEntry::default())
+    }
 }
 pub struct NsCache {
     inst: Mutex<NsCachePlain>,
 }
+pub type RcNsCache = Arc<NsCache>;
 impl NsCache {
     pub fn lookup_recursive(&self, name: &Name) -> Vec<IpAddr> {
         let guard = self.lock().unwrap();
@@ -51,11 +62,12 @@ impl NsCache {
 }
 impl Default for NsCache {
     fn default() -> Self {
-        NsCache {
+        let mut ret = NsCache {
             inst: Mutex::new(NsCachePlain {
                 entries: HashMap::new(),
             }),
-        }
+        };
+        ret
     }
 }
 impl Deref for NsCache {
@@ -65,3 +77,4 @@ impl Deref for NsCache {
         &self.inst
     }
 }
+// TODO: Case insensitivity, add tests

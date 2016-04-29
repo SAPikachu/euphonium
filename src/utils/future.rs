@@ -55,6 +55,7 @@ impl<T: Send + 'static> Future<T> {
         self.value.unwrap()
     }
     pub fn wait_any(futures: &mut [Self]) -> usize {
+        assert!(!futures.is_empty());
         loop {
             use mioco::Evented;
             unsafe {
