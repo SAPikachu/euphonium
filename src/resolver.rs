@@ -113,6 +113,7 @@ impl RecursiveResolver {
             warn!("Nameserver returned NS records for incorrect zone");
             return Err(ErrorKind::InsaneNsReferral.into());
         }
+        debug!("NS referral: {}", referred_zone);
 
         // Get IPs of all NSes.
         let ns_items: Vec<_> = msg.get_additional().iter()
@@ -123,18 +124,17 @@ impl RecursiveResolver {
             _ => None,
         })
         .collect();
-
-        for &(_, ref name) in &ns_items {
-            ns_domains.remove(name);
+        {
+            let mut guard = self.state.ns_cache.lock().unwrap();
+            let entry = guard.lookup_or_insert(&referred_zone);
+            for &(ref ip, ref name) in &ns_items {
+                ns_domains.remove(name);
+                entry.add_ns(*ip, name.clone());
+            }
         }
         for name in ns_domains.keys() {
             // TODO: Resolve these NSes manually
             warn!("No glue record for {}", name);
-        }
-        // TODO: Add new nameservers to cache
-        {
-            let guard = self.state.ns_cache.lock().unwrap();
-
         }
         self.query_ns_multiple(&ns_items.iter().map(|x| x.0).collect::<Vec<_>>())
     }

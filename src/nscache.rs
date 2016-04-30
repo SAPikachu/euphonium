@@ -38,7 +38,7 @@ impl NsCachePlain {
         self.entries.get(name)
     }
     pub fn lookup_or_insert(&mut self, name: &Name) -> &mut NsCacheEntry {
-        self.entries.entry(name.clone()).or_insert_with(|| NsCacheEntry::default())
+        self.entries.entry(name.clone()).or_insert_with(NsCacheEntry::default)
     }
 }
 pub struct NsCache {
@@ -51,7 +51,10 @@ impl NsCache {
         let mut cur = name.clone();
         loop {
             match guard.lookup(&cur) {
-                Some(x) => { return x.to_addrs(); },
+                Some(x) => {
+                    debug!("Found NS for {} at {}", name, cur);
+                    return x.to_addrs();
+                },
                 None => {
                     assert!(!cur.is_root());
                     cur = cur.base_name();
