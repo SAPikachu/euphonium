@@ -9,6 +9,7 @@ use mioco::mio::Ipv4Addr;
 use mioco::sync::Mutex;
 use trust_dns::op::{Message, ResponseCode, Edns, OpCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData};
+use itertools::Itertools;
 
 use utils::{Result, Error as TopError, CloneExt, MessageExt, Future};
 use query::{query_multiple, query_multiple_handle_futures, query as query_one};
@@ -21,6 +22,7 @@ use nscache::RcNsCache;
 pub enum ErrorKind {
     NoNameserver,
     EmptyAnswer,
+    InsaneNsReferral,
 }
 
 pub struct Resolver {
@@ -90,12 +92,9 @@ impl RecursiveResolver {
         self.handle_ns_referral(&result)
     }
     fn handle_ns_referral(&self, msg: &Message) -> Result<Message> {
-        let mut ns_domains : HashSet<_> = msg.get_name_servers().iter() 
+        let mut ns_domains : HashMap<_, _> = msg.get_name_servers().iter()
         .filter_map(|x| match *x.get_rdata() {
-            RData::NS {ref nsdname} => {
-                // TODO: Validate NS record
-                Some(nsdname.clone())
-            },
+            RData::NS {ref nsdname} => Some((nsdname.clone(), x.get_name().clone())),
             _ => None,
         })
         .collect();
@@ -103,10 +102,21 @@ impl RecursiveResolver {
             warn!("Nameserver returned NOERROR and empty answer");
             return Err(ErrorKind::EmptyAnswer.into());
         }
+        if ns_domains.values().dedup().count() > 1 {
+            // FIXME: Is this legal?
+            debug_assert!(false);
+            warn!("Nameserver returned NS records for multiple zones");
+            return Err(ErrorKind::InsaneNsReferral.into());
+        }
+        let referred_zone = ns_domains.values().next().unwrap().clone();
+        if !referred_zone.zone_of(msg.get_queries()[0].get_name()) {
+            warn!("Nameserver returned NS records for incorrect zone");
+            return Err(ErrorKind::InsaneNsReferral.into());
+        }
 
         // Get IPs of all NSes.
         let ns_items: Vec<_> = msg.get_additional().iter()
-        .filter(|x| ns_domains.contains(x.get_name()))
+        .filter(|x| ns_domains.contains_key(x.get_name()))
         .filter_map(|x| match *x.get_rdata() {
             RData::A {ref address} => Some((IpAddr::V4(*address), x.get_name().clone())),
             RData::AAAA {ref address} => Some((IpAddr::V6(*address), x.get_name().clone())),
@@ -117,11 +127,15 @@ impl RecursiveResolver {
         for &(_, ref name) in &ns_items {
             ns_domains.remove(name);
         }
-        for name in ns_domains {
+        for name in ns_domains.keys() {
             // TODO: Resolve these NSes manually
             warn!("No glue record for {}", name);
         }
         // TODO: Add new nameservers to cache
+        {
+            let guard = self.state.ns_cache.lock().unwrap();
+
+        }
         self.query_ns_multiple(&ns_items.iter().map(|x| x.0).collect::<Vec<_>>())
     }
     fn resolve(q: &Query, ns_cache: RcNsCache) -> Result<Message> {
@@ -135,6 +149,7 @@ impl Resolver {
     fn init_root_servers(&self) {
         let mut guard = self.ns_cache.lock().unwrap();
         let mut entry = guard.lookup_or_insert(&Name::root());
+        // TODO: Move this to configuration file
         let ROOT_SERVERS = [
             ("a.root-servers.net", "198.41.0.4"),
             ("b.root-servers.net", "192.228.79.201"),

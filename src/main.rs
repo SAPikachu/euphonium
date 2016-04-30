@@ -9,6 +9,7 @@ extern crate rand;
 #[macro_use] extern crate quick_error;
 #[macro_use] extern crate log;
 extern crate byteorder;
+extern crate itertools;
 
 mod utils;
 mod transport;

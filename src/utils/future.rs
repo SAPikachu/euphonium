@@ -22,7 +22,7 @@ impl<T: Send + 'static> Future<T> {
             match sender.send(f()) {
                 Ok(_) => {},
                 Err(_) => {
-                    debug!("Future was dropped before completion.");
+                    trace!("Future was dropped before completion.");
                 },
             };
         });

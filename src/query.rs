@@ -44,8 +44,14 @@ fn query_core<T: DnsTransport>(q: Query, mut transport: BoundDnsTransport<T>, en
             // Maybe the server doesn't implement EDNS?
             return query_core(msg.get_queries()[0].clone(), transport, false);
         }
-        debug!("A[{}][{}] {:?} {} answer(s)",
-           transport, resp.get_id(), resp.get_response_code(), resp.get_answers().len());
+        debug!("A[{}][{}] {:?} {}/{}/{}",
+           transport,
+           resp.get_id(),
+           resp.get_response_code(),
+           resp.get_answers().len(),
+           resp.get_name_servers().len(),
+           resp.get_additional().len(),
+        );
         return Ok(resp);
     }
 }
