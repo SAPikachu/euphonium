@@ -38,12 +38,12 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
 }
 fn main() {
     env_logger::init().expect("What the ...?");
-    println!("Hello, world!");
 
     mioco_config_start(move || {
         let ip = Ipv4Addr::new(0, 0, 0, 0);
         let port = 5354;
         let addr = SocketAddr::V4(SocketAddrV4::new(ip, port));
+        info!("Listening on {}:{}", ip, port);
 
         let resolver = Arc::new(Resolver::default());
         serve_tcp(&addr, resolver.clone()).expect("Failed to initialize TCP listener");
