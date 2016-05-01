@@ -171,10 +171,15 @@ impl RecursiveResolver {
             let mut next_query = self.state.query.clone();
             next_query.name(next_name);
             match self.resolve_next(&next_query) {
-                Err(_) => { return Ok(msg); },
+                Err(e) => {
+                    warn!("Failed to resolve CNAME {}: {:?}", next_query.get_name(), e);
+                    return Ok(msg);
+                },
                 Ok(ref next_msg) if
                     next_msg.get_response_code() != ResponseCode::NoError
                 => {
+                    warn!("Failed to resolve CNAME {}: Server returned error: {:?}",
+                          next_query.get_name(), next_msg.get_response_code());
                     return Ok(msg);
                 }
                 Ok(next_msg) => {
