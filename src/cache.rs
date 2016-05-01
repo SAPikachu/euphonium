@@ -38,9 +38,8 @@ pub type CacheInst = Mutex<CachePlain>;
 
 impl CachePlain {
     pub fn lookup(&mut self, key: &Key) -> Entry {
-        match self.entries.get(key) {
-            Some(x) => { return x.clone(); },
-            None => { /* Create the entry below */ },
+        if let Some(x) = self.entries.get(key) {
+            return x.clone();
         }
         self.entries.entry(key.clone()).or_insert_with(Entry::default).clone()
     }

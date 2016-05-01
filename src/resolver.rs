@@ -4,11 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::default::Default;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 use mioco::mio::Ipv4Addr;
 use mioco::sync::Mutex;
 use trust_dns::op::{Message, ResponseCode, Edns, OpCode, Query};
-use trust_dns::rr::{DNSClass, Name, RecordType, RData};
+use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
 use utils::{Result, Error as TopError, CloneExt, MessageExt, Future};
@@ -23,25 +24,41 @@ pub enum ErrorKind {
     NoNameserver,
     EmptyAnswer,
     InsaneNsReferral,
+    /// Another coroutine is already working on the query
+    LostRace,
 }
-
 pub struct Resolver {
     cache: Cache,
     ns_cache: RcNsCache,
 }
 pub type RcResolver = Arc<Resolver>;
 
+#[derive(Eq, PartialEq, Hash, Clone)]
+enum QueriedItem {
+    NS(IpAddr),
+    CNAME(Name),
+}
 struct RecursiveResolverState {
-    queried_ips: Mutex<HashSet<IpAddr>>,
+    queried_items: Mutex<HashSet<QueriedItem>>,
     query: Query,
     ns_cache: RcNsCache,
+    query_limit: AtomicIsize,
 }
 impl RecursiveResolverState {
     fn new(q: &Query, ns_cache: RcNsCache) -> Self {
         RecursiveResolverState {
-            queried_ips: Mutex::new(Default::default()),
+            queried_items: Mutex::new(Default::default()),
             query: q.clone(),
             ns_cache: ns_cache,
+            query_limit: AtomicIsize::new(256),
+        }
+    }
+    fn new_inner(&self, q: &Query) -> Self {
+        RecursiveResolverState {
+            queried_items: Mutex::new(Default::default()),
+            query: q.clone(),
+            ns_cache: self.ns_cache.clone(),
+            query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
         }
     }
 }
@@ -51,28 +68,36 @@ struct RecursiveResolver {
 }
 impl RecursiveResolver {
     fn query(&self) -> Result<Message> {
+        // TODO: Handle expiration
         let ns = self.state.ns_cache.lookup_recursive(&self.state.query.get_name());
         self.query_ns_multiple(&ns)
     }
     fn query_ns_multiple(&self, ns: &[IpAddr]) -> Result<Message> {
+        if ns.is_empty() {
+            return Err(ErrorKind::NoNameserver.into());
+        }
         let mut futures: Vec<_> = ns.iter().filter_map(|x| self.query_ns_future(x)).collect();
         if futures.is_empty() {
-            return Err(ErrorKind::NoNameserver.into());
+            return Err(ErrorKind::LostRace.into());
         }
         query_multiple_handle_futures(&mut futures)
     }
+    fn register_query(&self, item: QueriedItem) -> bool {
+        let mut guard = self.state.queried_items.lock().unwrap();
+        if guard.contains(&item) {
+            return false;
+        }
+        if self.state.query_limit.fetch_sub(1, Ordering::Relaxed) <= 0 {
+            debug_assert!(false);
+            warn!("Already queried too many servers for {:?}, bug or attack?", self.state.query);
+            return false;
+        }
+        guard.insert(item);
+        true
+    }
     fn query_ns_future(&self, ns: &IpAddr) -> Option<Future<Result<Message>>> {
-        {
-            let mut guard = self.state.queried_ips.lock().unwrap();
-            if guard.contains(ns) {
-                return None;
-            }
-            if guard.len() > 256 {
-                debug_assert!(false);
-                warn!("Already queried too many servers for {:?}, bug or attack?", self.state.query);
-                return None;
-            }
-            guard.insert(*ns);
+        if !self.register_query(QueriedItem::NS(*ns)) {
+            return None;
         }
         let inst = self.clone();
         let ns_clone = *ns;
@@ -84,12 +109,92 @@ impl RecursiveResolver {
             return Ok(result);
         }
         if !result.get_answers().is_empty() {
-            // TODO: Handle CNAME-only response
-            // TODO: Update main cache if this response is more preferable
-            // TODO: Anything else to do?
-            return Ok(result);
+            return self.handle_normal_resp(result);
         }
         self.handle_ns_referral(&result)
+    }
+    #[allow(similar_names)]
+    fn find_unresolved_cnames(&self, msg: &Message) -> Option<Vec<Record>> {
+        let mut name = self.state.query.get_name();
+        let query_type = self.state.query.get_query_type();
+        let mut unresolved_cnames = Vec::<&Record>::new();
+        loop {
+            let cnames = {
+                let matched_records = || msg.get_answers().iter()
+                .filter(|x| x.get_name() == name);
+                let have_real_record = matched_records()
+                .any(|x| x.get_rr_type() == query_type);
+                if have_real_record {
+                    return None;
+                }
+                matched_records().filter(|x| x.get_rr_type() == RecordType::CNAME)
+                .collect_vec()
+            };
+            if cnames.is_empty() {
+                break;
+            }
+            if cnames.len() > 1 {
+                debug_assert!(false);
+                warn!("Server returned multiple CNAMEs for a single domain");
+                // Try to resolve anyways
+            }
+            unresolved_cnames.push(cnames[0]);
+            name = match *cnames[0].get_rdata() {
+                RData::CNAME {ref cname} => cname,
+                _ => panic!("Record type doesn't match RData"),
+            };
+        }
+        if unresolved_cnames.is_empty() {
+            // FIXME: This means the message has unrelated records in answer section?
+            return None;
+        }
+        Some(unresolved_cnames.iter().map(|x| (*x).clone()).collect())
+    }
+    #[allow(similar_names)]
+    fn handle_normal_resp(&self, msg: Message) -> Result<Message> {
+        // TODO: Update main cache if this response is more preferable
+        // TODO: Anything else to do?
+        if self.state.query.get_query_type() == RecordType::CNAME {
+            // No need to resolve CNAME chain(?)
+            return Ok(msg);
+        }
+        if let Some(unresolved_cnames) = self.find_unresolved_cnames(&msg) {
+            let final_record = &unresolved_cnames[unresolved_cnames.len() - 1];
+            let next_name = match *final_record.get_rdata() {
+                RData::CNAME {ref cname} => cname.clone(),
+                _ => panic!("Record type doesn't match RData"),
+            };
+            if !self.register_query(QueriedItem::CNAME(next_name.clone())) {
+                return Err(ErrorKind::LostRace.into());
+            }
+            debug!("[{}] CNAME referral: {}", self.state.query.get_name(), next_name);
+            let mut next_query = self.state.query.clone();
+            next_query.name(next_name);
+            match self.resolve_next(&next_query) {
+                Err(_) => { return Ok(msg); },
+                Ok(ref next_msg) if
+                    next_msg.get_response_code() != ResponseCode::NoError
+                => {
+                    return Ok(msg);
+                }
+                Ok(next_msg) => {
+                    // Simpler way to clear all answers
+                    let mut new_msg = msg.truncate();
+                    assert!(new_msg.get_queries().is_empty());
+                    assert!(new_msg.get_answers().is_empty());
+                    assert!(new_msg.get_name_servers().is_empty());
+                    assert!(new_msg.get_additional().is_empty());
+                    new_msg.truncated(false);
+                    new_msg.add_query(self.state.query.clone());
+                    unresolved_cnames.iter().cloned().foreach(|x| {
+                        new_msg.add_answer(x);
+                    });
+                    new_msg.add_all_answers(next_msg.get_answers());
+                    return Ok(new_msg);
+                },
+            };
+        }
+        Ok(msg)
     }
     fn handle_ns_referral(&self, msg: &Message) -> Result<Message> {
         let mut ns_domains : HashMap<_, _> = msg.get_name_servers().iter()
@@ -109,11 +214,11 @@ impl RecursiveResolver {
             return Err(ErrorKind::InsaneNsReferral.into());
         }
         let referred_zone = ns_domains.values().next().unwrap().clone();
-        if !referred_zone.zone_of(msg.get_queries()[0].get_name()) {
+        if !referred_zone.zone_of(self.state.query.get_name()) {
             warn!("Nameserver returned NS records for incorrect zone");
             return Err(ErrorKind::InsaneNsReferral.into());
         }
-        debug!("NS referral: {}", referred_zone);
+        debug!("[{}] NS referral: {}", self.state.query.get_name(), referred_zone);
 
         // Get IPs of all NSes.
         let ns_items: Vec<_> = msg.get_additional().iter()
@@ -141,6 +246,12 @@ impl RecursiveResolver {
     fn resolve(q: &Query, ns_cache: RcNsCache) -> Result<Message> {
         let resolver = RecursiveResolver {
             state: Arc::new(RecursiveResolverState::new(q, ns_cache)),
+        };
+        resolver.query()
+    }
+    fn resolve_next(&self, q: &Query) -> Result<Message> {
+        let resolver = RecursiveResolver {
+            state: Arc::new(self.state.new_inner(q)),
         };
         resolver.query()
     }

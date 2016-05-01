@@ -23,7 +23,7 @@ impl NsCacheEntry {
         self.nameservers.keys().cloned().collect()
     }
     pub fn add_ns(&mut self, ip: IpAddr, domain: Name) {
-        self.nameservers.entry(ip.clone()).or_insert_with(move || NsItem {
+        self.nameservers.entry(ip).or_insert_with(move || NsItem {
             ip: ip,
             name: domain,
         });
@@ -65,12 +65,11 @@ impl NsCache {
 }
 impl Default for NsCache {
     fn default() -> Self {
-        let mut ret = NsCache {
+        NsCache {
             inst: Mutex::new(NsCachePlain {
                 entries: HashMap::new(),
             }),
-        };
-        ret
+        }
     }
 }
 impl Deref for NsCache {
