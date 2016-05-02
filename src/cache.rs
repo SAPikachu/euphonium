@@ -32,6 +32,7 @@ impl Entry {
         });
     }
 }
+#[derive(Default)]
 pub struct CachePlain {
     entries: HashMap<Key, Entry>,
 }
@@ -81,9 +82,17 @@ impl Default for Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trust_dns::rr::Name;
 
+    fn name(raw: &str) -> Name {
+        Name::parse(raw, Some(&Name::root())).unwrap()
+    }
     #[test]
     fn test_cache_case_insensitivity() {
-        unimplemented!();
+        let mut cache = CachePlain::default();
+        cache.lookup_or_insert(&name("www.google.com"));
+        assert!(cache.lookup(&name("www.google.com")).is_some());
+        assert!(cache.lookup(&name("www.baidu.com")).is_none());
+        assert!(cache.lookup(&name("wWw.goOgle.coM")).is_some());
     }
 }
