@@ -10,16 +10,18 @@ use trust_dns::op::Message;
 use utils::MessageExt;
 
 pub type Key = Name;
+#[derive(Default)]
 pub struct RecordTypeEntry {
     message: Option<Message>,
     expiration: Option<SystemTime>,
 }
-pub struct EntryPlain {
+#[derive(Default)]
+pub struct Entry {
     records: HashMap<RecordType, RecordTypeEntry>,
 }
-impl EntryPlain {
-    pub fn lookup(&self, t: &RecordType) -> Option<&Message> {
-        self.records.get(t).map_or(None, |x| x.message.as_ref())
+impl Entry {
+    pub fn lookup(&self, t: RecordType) -> Option<&Message> {
+        self.records.get(&t).map_or(None, |x| x.message.as_ref())
     }
     pub fn update(&mut self, msg: &Message) {
         // TODO: Validate message before updating
@@ -30,26 +32,40 @@ impl EntryPlain {
         });
     }
 }
-pub type EntryInst = Arc<Mutex<EntryPlain>>;
 pub struct CachePlain {
     entries: HashMap<Key, Entry>,
 }
 pub type CacheInst = Mutex<CachePlain>; 
 
 impl CachePlain {
-    pub fn lookup(&mut self, key: &Key) -> Entry {
-        if let Some(x) = self.entries.get(key) {
-            return x.clone();
-        }
-        self.entries.entry(key.clone()).or_insert_with(Entry::default).clone()
+    pub fn lookup(&self, key: &Key) -> Option<&Entry> {
+        self.entries.get(key)
+    }
+    pub fn lookup_or_insert(&mut self, key: &Key) -> &mut Entry {
+        self.entries.entry(key.clone()).or_insert_with(Entry::default)
     }
 }
 pub struct Cache {
     inst: CacheInst,
 }
 impl Cache {
-    pub fn lookup(&self, key: &Key) -> Entry {
-        self.inst.lock().expect("The mutex shouldn't be poisoned").lookup(key)
+    pub fn lookup<F, R>(&self, key: &Key, op: F) -> Option<R>
+        where F: FnOnce(&Entry) -> R,
+    {
+        let guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
+        guard.lookup(key).map(op)
+    }
+    pub fn lookup_with_type<F, R>(&self, key: &Key, t: RecordType, op: F) -> Option<R>
+        where F: FnOnce(&Message) -> R,
+    {
+        let guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
+        guard.lookup(key).and_then(|entry| entry.lookup(t)).map(op)
+    }
+    pub fn operate<F, R>(&self, key: &Key, op: F) -> R
+        where F: FnOnce(&mut Entry) -> R,
+    {
+        let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
+        op(guard.lookup_or_insert(key))
     }
 }
 impl Default for Cache {
@@ -61,30 +77,13 @@ impl Default for Cache {
         }
     }
 }
-impl Deref for Cache {
-    type Target = Mutex<CachePlain>;
 
-    fn deref(&self) -> &Self::Target {
-        &self.inst
-    }
-}
-#[derive(Clone)]
-pub struct Entry {
-    inst: EntryInst,
-}
-impl Default for Entry {
-    fn default() -> Entry {
-        Entry {
-            inst: Arc::new(Mutex::new(EntryPlain {
-                records: HashMap::new(),
-            }))
-        }
-    }
-}
-impl Deref for Entry {
-    type Target = Mutex<EntryPlain>;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    fn deref(&self) -> &Self::Target {
-        self.inst.deref()
+    #[test]
+    fn test_cache_case_insensitivity() {
+        unimplemented!();
     }
 }

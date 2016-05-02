@@ -246,7 +246,7 @@ impl RecursiveResolver {
             // TODO: Resolve these NSes manually
             warn!("No glue record for {}", name);
         }
-        self.query_ns_multiple(&ns_items.iter().map(|x| x.0).collect::<Vec<_>>())
+        self.query_ns_multiple(&ns_items.iter().map(|x| x.0).collect_vec())
     }
     fn resolve(q: &Query, ns_cache: RcNsCache) -> Result<Message> {
         let resolver = RecursiveResolver {
@@ -295,17 +295,18 @@ impl Resolver {
         debug_assert!(msg.get_queries().len() == 1);
         debug_assert!(msg.get_answers().is_empty());
         debug_assert!(msg.get_name_servers().is_empty());
-        let entry = self.cache.lookup(msg.get_queries()[0].get_name());
-        match entry.lock().unwrap().lookup(&msg.get_queries()[0].get_query_type()) {
-            None => {},
-            Some(cached) => {
-                // TODO: Adjust TTL, check whether records are stale
-                msg.copy_resp_from(cached);
-                return Ok(());
-            },
-        };
+        let query_type = msg.get_queries()[0].get_query_type();
+        let name = msg.get_queries()[0].get_name().clone();
+        let cache_hit = self.cache.lookup_with_type(
+            &name,
+            query_type,
+            |cached| msg.copy_resp_from(cached),
+        ).is_some();
+        if cache_hit {
+            return Ok(());
+        }
         let resp = try!(self.resolve_recursive(&msg.get_queries()[0]));
-        entry.lock().unwrap().update(&resp);
+        self.cache.operate(&name, |entry| entry.update(&resp));
         msg.copy_resp_from(&resp);
         Ok(())
     }
