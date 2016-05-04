@@ -5,7 +5,7 @@ use std::ops::Deref;
 
 use mioco::sync::Mutex;
 use trust_dns::rr::{Name, RecordType};
-use trust_dns::op::Message;
+use trust_dns::op::{Message, OpCode, MessageType, ResponseCode};
 
 use utils::MessageExt;
 
@@ -25,8 +25,13 @@ impl Entry {
     }
     pub fn update(&mut self, msg: &Message) {
         // TODO: Validate message before updating
+        // TODO: Confirm that the new message is more preferable than existing one
         // TODO: Expiration
-        self.records.insert(msg.get_queries()[0].get_query_type(), RecordTypeEntry {
+        let t = msg.get_queries()[0].get_query_type();
+        if self.records.contains_key(&t) {
+            return;
+        }
+        self.records.insert(t, RecordTypeEntry {
             message: Some(msg.clone_resp()),
             expiration: None,
         });
@@ -49,6 +54,7 @@ impl CachePlain {
 pub struct Cache {
     inst: CacheInst,
 }
+pub type RcCache = Arc<Cache>;
 impl Cache {
     pub fn lookup<F, R>(&self, key: &Key, op: F) -> Option<R>
         where F: FnOnce(&Entry) -> R,
@@ -67,6 +73,21 @@ impl Cache {
     {
         let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
         op(guard.lookup_or_insert(key))
+    }
+    pub fn update_from_message(&self, msg: &Message) {
+        if cfg!(debug_assertions) {
+            assert!(msg.get_op_code() == OpCode::Query);
+            assert!(msg.get_message_type() == MessageType::Response);
+            assert!(msg.get_queries().len() == 1);
+            if msg.get_answers().is_empty() {
+                assert!(msg.get_response_code() != ResponseCode::NoError);
+            } else {
+                let name = msg.get_queries()[0].get_name();
+                assert!(msg.get_answers().iter().any(|x| x.get_name() == name));
+            }
+        }
+        let name = msg.get_queries()[0].get_name();
+        self.operate(name, |entry| entry.update(&msg));
     }
 }
 impl Default for Cache {

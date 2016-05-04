@@ -14,7 +14,7 @@ use itertools::Itertools;
 
 use utils::{Result, Error as TopError, CloneExt, MessageExt, Future};
 use query::{query_multiple, query_multiple_handle_futures, query as query_one};
-use cache::Cache;
+use cache::RcCache;
 use nscache::RcNsCache;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
@@ -28,28 +28,31 @@ pub enum ErrorKind {
     LostRace,
 }
 pub struct Resolver {
-    cache: Cache,
+    cache: RcCache,
     ns_cache: RcNsCache,
 }
 pub type RcResolver = Arc<Resolver>;
 
-#[derive(Eq, PartialEq, Hash, Clone)]
+#[derive(Eq, PartialEq, Hash, Clone, Debug)]
 enum QueriedItem {
     NS(IpAddr),
     CNAME(Name),
+    NSDomain(Name),
 }
 struct RecursiveResolverState {
     queried_items: Mutex<HashSet<QueriedItem>>,
     query: Query,
     ns_cache: RcNsCache,
+    cache: RcCache,
     query_limit: AtomicIsize,
 }
 impl RecursiveResolverState {
-    fn new(q: &Query, ns_cache: RcNsCache) -> Self {
+    fn new(q: &Query, parent: &Resolver) -> Self {
         RecursiveResolverState {
             queried_items: Mutex::new(Default::default()),
             query: q.clone(),
-            ns_cache: ns_cache,
+            ns_cache: parent.ns_cache.clone(),
+            cache: parent.cache.clone(),
             query_limit: AtomicIsize::new(256),
         }
     }
@@ -58,6 +61,7 @@ impl RecursiveResolverState {
             queried_items: Mutex::new(Default::default()),
             query: q.clone(),
             ns_cache: self.ns_cache.clone(),
+            cache: self.cache.clone(),
             query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
         }
     }
@@ -70,13 +74,42 @@ impl RecursiveResolver {
     fn query(&self) -> Result<Message> {
         // TODO: Handle expiration
         let ns = self.state.ns_cache.lookup_recursive(&self.state.query.get_name());
-        self.query_ns_multiple(&ns)
+        self.query_ns_multiple(&ns, None)
     }
-    fn query_ns_multiple(&self, ns: &[IpAddr]) -> Result<Message> {
+    fn query_ns_domain(&self, auth_zone: &Name, ns: &Name) -> Result<Message> {
+        debug!("Query IP of NS {} in zone {}", ns, auth_zone);
+        let mut query = Query::new();
+        query.name(ns.clone())
+        .query_type(RecordType::A)
+        .query_class(DNSClass::IN);
+        // TODO: IPv6
+        let result = try!(self.resolve_next(&query));
+        let ips = result.get_answers().iter().filter_map(|x| match(*x.get_rdata()) {
+            RData::A {ref address} => Some(IpAddr::V4(*address)),
+            _ => None,
+        }).collect_vec();
+        self.state.ns_cache.update(auth_zone, ips.iter().map(|ip| (*ip, ns.clone())));
+        self.query_ns_multiple(&ips, None)
+    }
+    fn query_ns_domain_future(&self, auth_zone: &Name, ns: Name) -> Option<Future<Result<Message>>> {
+        if !self.register_query(QueriedItem::NSDomain(ns.clone())) {
+            return None;
+        }
+        let inst = self.clone();
+        let auth_zone_clone = auth_zone.clone();
+        Some(Future::from_fn(move || inst.query_ns_domain(&auth_zone_clone, &ns)))
+    }
+    fn query_ns_domain_futures<T>(&self, auth_zone: &Name, ns_iter: T) -> Vec<Future<Result<Message>>> where T: IntoIterator<Item=Name> {
+        ns_iter.into_iter()
+        .filter_map(|x| self.query_ns_domain_future(auth_zone, x))
+        .collect()
+    }
+    fn query_ns_multiple<TExtra>(&self, ns: &[IpAddr], extra_futures: TExtra) -> Result<Message> where TExtra: IntoIterator<Item=Future<Result<Message>>> {
         if ns.is_empty() {
             return Err(ErrorKind::NoNameserver.into());
         }
         let mut futures: Vec<_> = ns.iter().filter_map(|x| self.query_ns_future(x)).collect();
+        futures.extend(extra_futures);
         if futures.is_empty() {
             return Err(ErrorKind::LostRace.into());
         }
@@ -85,6 +118,7 @@ impl RecursiveResolver {
     fn register_query(&self, item: QueriedItem) -> bool {
         let mut guard = self.state.queried_items.lock().unwrap();
         if guard.contains(&item) {
+            trace!("Already queried {:?}", item);
             return false;
         }
         if self.state.query_limit.fetch_sub(1, Ordering::Relaxed) <= 0 {
@@ -234,31 +268,38 @@ impl RecursiveResolver {
             _ => None,
         })
         .collect();
-        {
-            let mut guard = self.state.ns_cache.lock().unwrap();
-            let entry = guard.lookup_or_insert(&referred_zone);
-            for &(ref ip, ref name) in &ns_items {
+        self.state.ns_cache.update(
+            &referred_zone,
+            ns_items.iter().map(|&(ip, ref name)| {
                 ns_domains.remove(name);
-                entry.add_ns(*ip, name.clone());
-            }
-        }
-        for name in ns_domains.keys() {
-            // TODO: Resolve these NSes manually
-            warn!("No glue record for {}", name);
-        }
-        self.query_ns_multiple(&ns_items.iter().map(|x| x.0).collect_vec())
+                (ip, name.clone())
+            }),
+        );
+        let orphan_domain_futures = self.query_ns_domain_futures(
+            &referred_zone, ns_domains.keys().cloned(),
+        );
+        self.query_ns_multiple(
+            &ns_items.iter().map(|x| x.0).collect_vec(),
+            orphan_domain_futures,
+        )
     }
-    fn resolve(q: &Query, ns_cache: RcNsCache) -> Result<Message> {
+    fn resolve(q: &Query, parent: &Resolver) -> Result<Message> {
         let resolver = RecursiveResolver {
-            state: Arc::new(RecursiveResolverState::new(q, ns_cache)),
+            state: Arc::new(RecursiveResolverState::new(q, parent)),
         };
         resolver.query()
     }
     fn resolve_next(&self, q: &Query) -> Result<Message> {
-        let resolver = RecursiveResolver {
-            state: Arc::new(self.state.new_inner(q)),
-        };
-        resolver.query()
+        if let Some(msg) = self.state.cache.lookup_with_type(
+            q.get_name(), q.get_query_type(), |m| m.clone_resp_for(q),
+        ) {
+            Ok(msg)
+        } else {
+            let resolver = RecursiveResolver {
+                state: Arc::new(self.state.new_inner(q)),
+            };
+            resolver.query()
+        }
     }
 }
 impl Resolver {
@@ -289,7 +330,7 @@ impl Resolver {
         }
     }
     fn resolve_recursive(&self, q: &Query) -> Result<Message> {
-        RecursiveResolver::resolve(q, self.ns_cache.clone())
+        RecursiveResolver::resolve(q, self)
     }
     pub fn resolve(&self, msg: &mut Message) -> Result<()> {
         debug_assert!(msg.get_queries().len() == 1);
@@ -306,7 +347,7 @@ impl Resolver {
             return Ok(());
         }
         let resp = try!(self.resolve_recursive(&msg.get_queries()[0]));
-        self.cache.operate(&name, |entry| entry.update(&resp));
+        self.cache.update_from_message(&resp);
         msg.copy_resp_from(&resp);
         Ok(())
     }

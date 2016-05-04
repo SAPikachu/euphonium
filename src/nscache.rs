@@ -46,6 +46,15 @@ pub struct NsCache {
 }
 pub type RcNsCache = Arc<NsCache>;
 impl NsCache {
+    pub fn update<T>(&self, auth_zone: &Name, items: T)
+        where T: IntoIterator<Item=(IpAddr, Name)>,
+    {
+        let mut guard = self.lock().unwrap();
+        let entry = guard.lookup_or_insert(&auth_zone);
+        for (ip, name) in items {
+            entry.add_ns(ip, name);
+        }
+    }
     pub fn lookup_recursive(&self, name: &Name) -> Vec<IpAddr> {
         let guard = self.lock().unwrap();
         let mut cur = name.clone();
