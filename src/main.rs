@@ -10,6 +10,8 @@ extern crate rand;
 #[macro_use] extern crate log;
 extern crate byteorder;
 extern crate itertools;
+#[macro_use] extern crate custom_derive;
+#[macro_use] extern crate newtype_derive;
 
 mod utils;
 mod transport;
@@ -20,11 +22,10 @@ mod serve;
 mod resolver;
 
 use std::net::{SocketAddr, SocketAddrV4};
-use std::sync::Arc;
 
 use mioco::mio::Ipv4Addr;
 
-use resolver::Resolver;
+use resolver::RcResolver;
 use serve::{serve_tcp, serve_udp};
 
 fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
@@ -45,7 +46,7 @@ fn main() {
         let addr = SocketAddr::V4(SocketAddrV4::new(ip, port));
         info!("Listening on {}:{}", ip, port);
 
-        let resolver = Arc::new(Resolver::default());
+        let resolver = RcResolver::default();
         serve_tcp(&addr, resolver.clone()).expect("Failed to initialize TCP listener");
         serve_udp(&addr, resolver).expect("Failed to initialize UDP listener");
     }).expect("Unexpected error from mioco::start");
