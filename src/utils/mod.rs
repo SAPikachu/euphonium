@@ -9,15 +9,18 @@ use mioco::{Evented};
 use mioco::udp::UdpSocket;
 use trust_dns::op::{Message, Query, MessageType};
 use trust_dns::error::{DecodeError, EncodeError};
-use trust_dns::rr::RecordType;
+use trust_dns::rr::{RecordType, Record};
 use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
+use itertools::Itertools;
 
 use ::resolver::ErrorKind as ResolverErrorKind;
 
 pub mod future;
 pub mod with_timeout;
+pub mod as_disp;
 pub use self::with_timeout::WithTimeout;
 pub use self::future::Future;
+pub use self::as_disp::AsDisplay;
 
 quick_error! {
     #[derive(Debug)]
@@ -69,6 +72,8 @@ pub trait MessageExt {
     fn clone_resp(&self) -> Message;
     fn clone_resp_for(&self, q: &Query) -> Message;
     fn copy_resp_from(&mut self, other: &Message);
+    fn copy_resp_with<F>(&mut self, other: &Message, mut f: F)
+        where F: FnMut(&Record) -> Record;
     fn is_resp_for(&self, other: &Message) -> bool;
 }
 impl MessageExt for Message {
@@ -113,16 +118,24 @@ impl MessageExt for Message {
         ret
     }
     fn copy_resp_from(&mut self, other: &Message) {
+        self.copy_resp_with(other, Record::clone)
+    }
+    fn copy_resp_with<F>(&mut self, other: &Message, mut f: F)
+        where F: FnMut(&Record) -> Record,
+    {
         self.response_code(other.get_response_code());
-        self.add_all_answers(other.get_answers());
-        self.add_all_name_servers(other.get_name_servers());
-        for rec in other.get_additional() {
-            if rec.get_rr_type() == RecordType::OPT {
-                // RFC 2671 4.1: OPT should never be cached nor forwarded
-                continue;
-            }
-            self.add_additional(rec.clone());
-        }
+        other.get_answers().iter()
+        .map(|x| f(x))
+        .foreach(|x| { self.add_answer(x); });
+        other.get_name_servers().iter()
+        .map(|x| f(x))
+        .foreach(|x| { self.add_name_server(x); });
+
+        // RFC 2671 4.1: OPT should never be cached nor forwarded
+        other.get_additional().iter()
+        .filter(|x| x.get_rr_type() != RecordType::OPT)
+        .map(|x| f(x))
+        .foreach(|x| { self.add_additional(x); });
     }
     fn is_resp_for(&self, other: &Message) -> bool {
         assert_eq!(other.get_message_type(), MessageType::Query);

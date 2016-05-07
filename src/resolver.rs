@@ -90,7 +90,7 @@ impl RecursiveResolver {
         self.query_ns_multiple(&ns, None)
     }
     fn query_ns_domain(&self, auth_zone: &Name, ns: &Name) -> Result<Message> {
-        debug!("Query IP of NS {} in zone {}", ns, auth_zone);
+        debug!("Querying IP of NS {} in zone {}", ns, auth_zone);
         let mut query = Query::new();
         query.name(ns.clone())
         .query_type(RecordType::A)
@@ -300,7 +300,9 @@ impl RecursiveResolver {
         let resolver = RecursiveResolver {
             state: Arc::new(RecursiveResolverState::new(q, parent)),
         };
-        resolver.query()
+        let ret = try!(resolver.query());
+        resolver.get_cache().update_from_message(&ret);
+        Ok(ret)
     }
     fn resolve_next(&self, q: &Query) -> Result<Message> {
         if let Some(msg) = self.get_cache().lookup_with_type(
@@ -311,7 +313,9 @@ impl RecursiveResolver {
             let resolver = RecursiveResolver {
                 state: Arc::new(self.state.new_inner(q)),
             };
-            resolver.query()
+            let ret = try!(resolver.query());
+            self.get_cache().update_from_message(&ret);
+            Ok(ret)
         }
     }
 }
@@ -354,13 +358,12 @@ impl RcResolver {
         let cache_hit = self.cache.lookup_with_type(
             &name,
             query_type,
-            |cached| msg.copy_resp_from(cached),
+            |cached| msg.copy_resp_from(&cached),
         ).is_some();
         if cache_hit {
             return Ok(());
         }
         let resp = try!(self.resolve_recursive(&msg.get_queries()[0]));
-        self.cache.update_from_message(&resp);
         msg.copy_resp_from(&resp);
         Ok(())
     }
