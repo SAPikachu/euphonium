@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{SystemTime, Duration};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::ops::Deref;
@@ -11,6 +11,7 @@ use trust_dns::op::{Message, OpCode, MessageType, ResponseCode};
 use utils::{MessageExt, AsDisplay};
 
 const MIN_TTL: u32 = 1;
+const MIN_CACHE_TTL: u32 = 60;
 
 pub type Key = Name;
 
@@ -72,10 +73,23 @@ impl Entry {
         if self.records.contains_key(&t) {
             return;
         }
-        debug!("Updating cache: {} -> {}", msg.get_queries()[0].as_disp(), msg.as_disp());
+        let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
+        if !accepted_responses.contains(&msg.get_response_code()) {
+            return;
+        }
+        let all_records = msg.get_answers().iter()
+        .chain(msg.get_name_servers())
+        .chain(msg.get_additional())
+        .filter(|x| x.get_rr_type() != RecordType::OPT);
+        let cache_ttl = max(
+            MIN_CACHE_TTL,
+            all_records.map(|x| x.get_ttl()).min().unwrap_or(MIN_CACHE_TTL),
+        ) as u64;
+        debug!("Updating cache: {} -> {} (TTL: {})",
+               msg.get_queries()[0].as_disp(), msg.as_disp(), cache_ttl);
         self.records.insert(t, RecordTypeEntry {
             message: msg.clone_resp(),
-            expiration: None,
+            expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
             ttl: TtlMode::Relative(SystemTime::now()),
         });
     }
