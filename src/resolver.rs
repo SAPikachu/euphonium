@@ -96,7 +96,7 @@ impl RecursiveResolver {
     fn query(&self) -> Result<Message> {
         // TODO: Handle expiration
         let ns = self.get_ns_cache().lookup_recursive(&self.state.query.get_name());
-        self.query_ns_multiple(&ns, None)
+        self.query_ns_multiple(ns, None)
     }
     fn query_ns_domain(&self, auth_zone: &Name, ns: &Name) -> Result<Message> {
         debug!("Querying IP of NS {} in zone {}", ns, auth_zone);
@@ -107,11 +107,11 @@ impl RecursiveResolver {
         // TODO: IPv6
         let result = try!(self.resolve_next(&query));
         let ips = result.get_answers().iter().filter_map(|x| match *x.get_rdata() {
-            RData::A {ref address} => Some(IpAddr::V4(*address)),
+            RData::A {ref address} => Some((IpAddr::V4(*address), x.get_ttl())),
             _ => None,
         }).collect_vec();
-        self.get_ns_cache().update(auth_zone, ips.iter().map(|ip| (*ip, ns.clone())));
-        self.query_ns_multiple(&ips, None)
+        self.get_ns_cache().update(auth_zone, ips.iter().map(|&(ip, ttl)| (ip, ns.clone(), ttl as u64)));
+        self.query_ns_multiple(ips.iter().map(|&(ip, _)| ip), None)
     }
     fn query_ns_domain_future(&self, auth_zone: &Name, ns: Name) -> Option<Future<Result<Message>>> {
         if !self.register_query(QueriedItem::NSDomain(ns.clone())) {
@@ -126,11 +126,17 @@ impl RecursiveResolver {
         .filter_map(|x| self.query_ns_domain_future(auth_zone, x))
         .collect()
     }
-    fn query_ns_multiple<TExtra>(&self, ns: &[IpAddr], extra_futures: TExtra) -> Result<Message> where TExtra: IntoIterator<Item=Future<Result<Message>>> {
-        if ns.is_empty() {
+    fn query_ns_multiple<TNs, TExtra>(&self, ns: TNs, extra_futures: TExtra) -> Result<Message>
+        where TNs: IntoIterator<Item=IpAddr>,
+              TExtra: IntoIterator<Item=Future<Result<Message>>>,
+    {
+        let mut ns_iter = ns.into_iter().peekable();
+        if ns_iter.peek().is_none() {
             return Err(ErrorKind::NoNameserver.into());
         }
-        let mut futures: Vec<_> = ns.iter().filter_map(|x| self.query_ns_future(x)).collect();
+        let mut futures: Vec<_> = ns_iter
+        .filter_map(|x| self.query_ns_future(&x))
+        .collect();
         futures.extend(extra_futures);
         if futures.is_empty() {
             return Err(ErrorKind::LostRace.into());
@@ -285,23 +291,27 @@ impl RecursiveResolver {
         let ns_items: Vec<_> = msg.get_additional().iter()
         .filter(|x| ns_domains.contains_key(x.get_name()))
         .filter_map(|x| match *x.get_rdata() {
-            RData::A {ref address} => Some((IpAddr::V4(*address), x.get_name().clone())),
-            RData::AAAA {ref address} => Some((IpAddr::V6(*address), x.get_name().clone())),
+            RData::A {ref address} => Some((
+                IpAddr::V4(*address), x.get_name().clone(), x.get_ttl(),
+            )),
+            RData::AAAA {ref address} => Some((
+                IpAddr::V6(*address), x.get_name().clone(), x.get_ttl(),
+            )),
             _ => None,
         })
         .collect();
         self.get_ns_cache().update(
             &referred_zone,
-            ns_items.iter().map(|&(ip, ref name)| {
+            ns_items.iter().map(|&(ip, ref name, ttl)| {
                 ns_domains.remove(name);
-                (ip, name.clone())
+                (ip, name.clone(), ttl as u64)
             }),
         );
         let orphan_domain_futures = self.query_ns_domain_futures(
             &referred_zone, ns_domains.keys().cloned(),
         );
         self.query_ns_multiple(
-            &ns_items.iter().map(|x| x.0).collect_vec(),
+            ns_items.iter().map(|x| x.0),
             orphan_domain_futures,
         )
     }
@@ -336,6 +346,7 @@ impl RcResolver {
     fn init_root_servers(&self) {
         let mut guard = self.ns_cache.lock().unwrap();
         let mut entry = guard.lookup_or_insert(&Name::root());
+        entry.pin();
         // TODO: Move this to configuration file
         let ROOT_SERVERS = [
             ("a.root-servers.net", "198.41.0.4"),
@@ -356,6 +367,7 @@ impl RcResolver {
             entry.add_ns(
                 IpAddr::V4(ip.parse().unwrap()),
                 Name::parse(domain, Some(Name::root()).as_ref()).unwrap(),
+                None,
             );
         }
     }
