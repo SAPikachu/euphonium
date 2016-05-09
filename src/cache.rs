@@ -1,14 +1,17 @@
 use std::time::{SystemTime, Duration};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::ops::Deref;
 use std::cmp::{min, max};
+use std::boxed::Box;
 
-use mioco::sync::Mutex;
+use mioco::sync::{Mutex};
+use mioco::sync::mpsc::{Sender};
 use trust_dns::rr::{Name, RecordType, Record};
-use trust_dns::op::{Message, OpCode, MessageType, ResponseCode};
+use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
 
-use utils::{MessageExt, AsDisplay};
+use utils::{CloneExt, MessageExt, AsDisplay};
 
 const MIN_TTL: u32 = 1;
 const MIN_CACHE_TTL: u32 = 60;
@@ -45,6 +48,37 @@ pub struct RecordTypeEntry {
     message: Message,
     expiration: Option<SystemTime>,
     ttl: TtlMode,
+    expiration_notifier: Option<Sender<Query>>,
+    expiration_notified: AtomicBool,
+}
+impl RecordTypeEntry {
+    pub fn maybe_notify_expiration(&self) {
+        let sender = match self.expiration_notifier {
+            None => return,
+            Some(ref s) => s,
+        };
+        if !self.is_expired() {
+            return;
+        }
+        // TODO: Maybe we need to notify later to handle SERVFAIL?
+        if self.expiration_notified.load(Ordering::Relaxed) {
+            // Already notified
+            return;
+        }
+        if self.expiration_notified.swap(true, Ordering::Relaxed) {
+            // Lost race
+            return;
+        }
+        let q = self.message.get_queries()[0].clone();
+        debug!("Entry expired: {}", q.as_disp());
+        sender.send(q.into()).is_ok();
+    }
+    pub fn is_expired(&self) -> bool {
+        match self.expiration {
+            None => false,
+            Some(ref t) => t <= &SystemTime::now(),
+        }
+    }
 }
 #[derive(Default)]
 pub struct Entry {
@@ -52,10 +86,14 @@ pub struct Entry {
 }
 impl Entry {
     pub fn lookup(&self, t: RecordType) -> Option<&Message> {
-        self.records.get(&t).map(|x| &x.message)
+        self.records.get(&t).map(|entry| {
+            entry.maybe_notify_expiration();
+            &entry.message
+        })
     }
     pub fn lookup_adjusted(&self, t: RecordType) -> Option<Message> {
         self.records.get(&t).map(|entry| {
+            entry.maybe_notify_expiration();
             let mut ret = Message::new();
             ret.copy_resp_with(&entry.message, |rec| {
                 let mut new_rec = rec.clone();
@@ -65,14 +103,11 @@ impl Entry {
             ret
         })
     }
-    pub fn update(&mut self, msg: &Message) {
+    pub fn update(&mut self, msg: &Message, expiration_notifier: Option<Sender<Query>>) {
         // TODO: Validate message before updating
         // TODO: Confirm that the new message is more preferable than existing one
-        // TODO: Expiration
+        assert!(msg.get_queries().len() == 1);
         let t = msg.get_queries()[0].get_query_type();
-        if self.records.contains_key(&t) {
-            return;
-        }
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
         if !accepted_responses.contains(&msg.get_response_code()) {
             return;
@@ -81,22 +116,28 @@ impl Entry {
         .chain(msg.get_name_servers())
         .chain(msg.get_additional())
         .filter(|x| x.get_rr_type() != RecordType::OPT);
+        // TODO: NXDomain should be cached for shorter time
         let cache_ttl = max(
             MIN_CACHE_TTL,
             all_records.map(|x| x.get_ttl()).min().unwrap_or(MIN_CACHE_TTL),
         ) as u64;
         debug!("Updating cache: {} -> {} (TTL: {})",
                msg.get_queries()[0].as_disp(), msg.as_disp(), cache_ttl);
+        let mut cache_msg = msg.clone_resp();
+        cache_msg.add_query(msg.get_queries()[0].clone());
         self.records.insert(t, RecordTypeEntry {
-            message: msg.clone_resp(),
+            message: cache_msg,
             expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
             ttl: TtlMode::Relative(SystemTime::now()),
+            expiration_notifier: expiration_notifier,
+            expiration_notified: AtomicBool::new(false),
         });
     }
 }
 #[derive(Default)]
 pub struct CachePlain {
     entries: HashMap<Key, Entry>,
+    expiration_notifier: Option<Sender<Query>>,
 }
 pub type CacheInst = Mutex<CachePlain>; 
 
@@ -113,6 +154,14 @@ pub struct Cache {
 }
 pub type RcCache = Arc<Cache>;
 impl Cache {
+    pub fn with_expiration_notifier(notifier: Sender<Query>) -> Self {
+        Cache {
+            inst: Mutex::new(CachePlain {
+                entries: HashMap::new(),
+                expiration_notifier: Some(notifier),
+            }),
+        }
+    }
     pub fn lookup<F, R>(&self, key: &Key, op: F) -> Option<R>
         where F: FnOnce(&Entry) -> R,
     {
@@ -126,10 +175,11 @@ impl Cache {
         guard.lookup(key).and_then(|entry| entry.lookup_adjusted(t)).map(op)
     }
     pub fn operate<F, R>(&self, key: &Key, op: F) -> R
-        where F: FnOnce(&mut Entry) -> R,
+        where F: FnOnce(&mut Entry, Option<Sender<Query>>) -> R,
     {
         let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
-        op(guard.lookup_or_insert(key))
+        let notifier = guard.expiration_notifier.clone();
+        op(guard.lookup_or_insert(key), notifier)
     }
     pub fn update_from_message(&self, msg: &Message) {
         if cfg!(debug_assertions) {
@@ -144,7 +194,7 @@ impl Cache {
             }
         }
         let name = msg.get_queries()[0].get_name();
-        self.operate(name, |entry| entry.update(&msg));
+        self.operate(name, |entry, notifier| entry.update(&msg, notifier));
     }
 }
 impl Default for Cache {
@@ -152,6 +202,7 @@ impl Default for Cache {
         Cache {
             inst: Mutex::new(CachePlain {
                 entries: HashMap::new(),
+                expiration_notifier: None,
             }),
         }
     }

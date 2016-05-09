@@ -6,8 +6,10 @@ use std::default::Default;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
+use mioco;
 use mioco::mio::Ipv4Addr;
 use mioco::sync::Mutex;
+use mioco::sync::mpsc::{channel, Sender, Receiver};
 use trust_dns::op::{Message, ResponseCode, Edns, OpCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
@@ -27,7 +29,6 @@ pub enum ErrorKind {
     /// Another coroutine is already working on the query
     LostRace,
 }
-#[derive(Default)]
 pub struct Resolver {
     cache: Cache,
     ns_cache: NsCache,
@@ -38,8 +39,13 @@ custom_derive! {
 }
 impl Default for RcResolver {
     fn default() -> Self {
-        let ret: RcResolver = Arc::new(Resolver::default()).into();
+        let (send, recv) = channel::<Query>();
+        let ret: RcResolver = Arc::new(Resolver {
+            cache: Cache::with_expiration_notifier(send),
+            ns_cache: NsCache::default(),
+        }).into();
         ret.init_root_servers();
+        ret.handle_cache_expiration_channel(recv);
         ret
     }
 }
@@ -54,14 +60,16 @@ struct RecursiveResolverState {
     query: Query,
     parent: RcResolver,
     query_limit: AtomicIsize,
+    skip_cache: bool,
 }
 impl RecursiveResolverState {
-    fn new(q: &Query, parent: RcResolver) -> Self {
+    fn new(q: &Query, parent: RcResolver, skip_cache: bool) -> Self {
         RecursiveResolverState {
             queried_items: Mutex::new(Default::default()),
             query: q.clone(),
             parent: parent,
             query_limit: AtomicIsize::new(256),
+            skip_cache: skip_cache,
         }
     }
     fn new_inner(&self, q: &Query) -> Self {
@@ -70,6 +78,7 @@ impl RecursiveResolverState {
             query: q.clone(),
             parent: self.parent.clone(),
             query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
+            skip_cache: self.skip_cache,
         }
     }
 }
@@ -296,27 +305,31 @@ impl RecursiveResolver {
             orphan_domain_futures,
         )
     }
-    fn resolve(q: &Query, parent: RcResolver) -> Result<Message> {
+    fn update_cache(&self, msg: &Message) {
+        self.get_cache().update_from_message(msg);
+    }
+    fn resolve(q: &Query, parent: RcResolver, skip_cache: bool) -> Result<Message> {
         let resolver = RecursiveResolver {
-            state: Arc::new(RecursiveResolverState::new(q, parent)),
+            state: Arc::new(RecursiveResolverState::new(q, parent, skip_cache)),
         };
         let ret = try!(resolver.query());
-        resolver.get_cache().update_from_message(&ret);
+        resolver.update_cache(&ret);
         Ok(ret)
     }
     fn resolve_next(&self, q: &Query) -> Result<Message> {
-        if let Some(msg) = self.get_cache().lookup_with_type(
-            q.get_name(), q.get_query_type(), |m| m.clone_resp_for(q),
-        ) {
-            Ok(msg)
-        } else {
-            let resolver = RecursiveResolver {
-                state: Arc::new(self.state.new_inner(q)),
-            };
-            let ret = try!(resolver.query());
-            self.get_cache().update_from_message(&ret);
-            Ok(ret)
+        if !self.state.skip_cache {
+            if let Some(msg) = self.get_cache().lookup_with_type(
+                q.get_name(), q.get_query_type(), |m| m.clone_resp_for(q),
+            ) {
+                return Ok(msg);
+            }
         }
+        let resolver = RecursiveResolver {
+            state: Arc::new(self.state.new_inner(q)),
+        };
+        let ret = try!(resolver.query());
+        self.update_cache(&ret);
+        Ok(ret)
     }
 }
 impl RcResolver {
@@ -346,8 +359,23 @@ impl RcResolver {
             );
         }
     }
+    fn handle_cache_expiration_channel(&self, ch: Receiver<Query>) {
+        // FIXME: `Query` is not really thread-safe because of `Rc` in `Name`,
+        // watch for memory leaks if we enable threading
+        let resolver = self.clone();
+        mioco::spawn(move || {
+            loop {
+                match ch.recv() {
+                    Ok(q) => {
+                        RecursiveResolver::resolve(&q, resolver.clone(), true).is_ok();
+                    },
+                    Err(_) => { return; },
+                }
+            }
+        });
+    }
     fn resolve_recursive(&self, q: &Query) -> Result<Message> {
-        RecursiveResolver::resolve(q, self.clone())
+        RecursiveResolver::resolve(q, self.clone(), false)
     }
     pub fn resolve(&self, msg: &mut Message) -> Result<()> {
         debug_assert!(msg.get_queries().len() == 1);
