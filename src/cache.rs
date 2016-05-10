@@ -2,9 +2,7 @@ use std::time::{SystemTime, Duration};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::ops::Deref;
 use std::cmp::{min, max};
-use std::boxed::Box;
 
 use mioco::sync::{Mutex};
 use mioco::sync::mpsc::{Sender};
@@ -18,6 +16,7 @@ const MIN_CACHE_TTL: u32 = 60;
 
 pub type Key = Name;
 
+#[allow(dead_code)] // FIXME
 #[derive(Debug, Copy, Clone)]
 pub enum TtlMode {
     Original,
@@ -85,12 +84,6 @@ pub struct Entry {
     records: HashMap<RecordType, RecordTypeEntry>,
 }
 impl Entry {
-    pub fn lookup(&self, t: RecordType) -> Option<&Message> {
-        self.records.get(&t).map(|entry| {
-            entry.maybe_notify_expiration();
-            &entry.message
-        })
-    }
     pub fn lookup_adjusted(&self, t: RecordType) -> Option<Message> {
         self.records.get(&t).map(|entry| {
             entry.maybe_notify_expiration();
@@ -161,12 +154,6 @@ impl Cache {
                 expiration_notifier: Some(notifier),
             }),
         }
-    }
-    pub fn lookup<F, R>(&self, key: &Key, op: F) -> Option<R>
-        where F: FnOnce(&Entry) -> R,
-    {
-        let guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
-        guard.lookup(key).map(op)
     }
     pub fn lookup_with_type<F, R>(&self, key: &Key, t: RecordType, op: F) -> Option<R>
         where F: FnOnce(Message) -> R,

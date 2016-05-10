@@ -6,10 +6,7 @@ use std::net::IpAddr;
 use std::cmp::{max, min};
 
 use mioco::sync::Mutex;
-use trust_dns::rr::{Name, RecordType};
-use trust_dns::op::Message;
-
-use utils::MessageExt;
+use trust_dns::rr::{Name};
 
 const MAX_NS_TTL: u64 = 60 * 60 * 24;
 const MIN_NS_TTL: u64 = 60 * 15;
@@ -100,7 +97,7 @@ impl NsCache {
                     debug!("Found NS for {} at {}", name, cur);
                     return x.to_addrs();
                 },
-                Some(x) => {
+                Some(_) => {
                     debug!("NS for {} at {} is expired", name, cur);
                 },
                 None => {},

@@ -1,11 +1,9 @@
 use std;
 use std::io;
-use std::io::{Read, Write};
 use std::convert::From;
 
 use std::net::SocketAddr;
 
-use mioco::{Evented};
 use mioco::udp::UdpSocket;
 use trust_dns::op::{Message, Query, MessageType};
 use trust_dns::error::{DecodeError, EncodeError};

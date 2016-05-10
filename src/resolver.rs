@@ -1,21 +1,18 @@
 use std::sync::Arc;
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
-use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::default::Default;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use mioco;
-use mioco::mio::Ipv4Addr;
 use mioco::sync::Mutex;
-use mioco::sync::mpsc::{channel, Sender, Receiver};
-use trust_dns::op::{Message, ResponseCode, Edns, OpCode, Query};
+use mioco::sync::mpsc::{channel, Receiver};
+use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, Error as TopError, CloneExt, MessageExt, Future};
-use query::{query_multiple, query_multiple_handle_futures, query as query_one};
+use utils::{Result, CloneExt, MessageExt, Future};
+use query::{query_multiple_handle_futures, query as query_one};
 use cache::Cache;
 use nscache::NsCache;
 
@@ -343,6 +340,7 @@ impl RecursiveResolver {
     }
 }
 impl RcResolver {
+    #[allow(non_snake_case)]
     fn init_root_servers(&self) {
         let mut guard = self.ns_cache.lock().unwrap();
         let mut entry = guard.lookup_or_insert(&Name::root());

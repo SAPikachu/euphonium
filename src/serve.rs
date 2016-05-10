@@ -1,6 +1,5 @@
 use std::net::{SocketAddr};
 use std::cmp::max;
-use std::ops::Deref;
 
 use mioco;
 use mioco::JoinHandle;
@@ -10,10 +9,10 @@ use mioco::sync::mpsc::{channel};
 use trust_dns::op::{Message, ResponseCode, Edns, OpCode};
 use trust_dns::rr::DNSClass;
 
-use utils::{Result, Error, CloneExt, MessageExt, WithTimeout};
+use utils::{Result, Error, MessageExt, WithTimeout};
 use transport::{DnsTransport};
 use query::{EDNS_VER, QUERY_TIMEOUT};
-use resolver::{RcResolver, Resolver};
+use resolver::{RcResolver};
 
 /// This function should never fail, otherwise we have a panic
 fn handle_request(resolver: RcResolver, msg: Message, should_truncate: bool) -> Result<Vec<u8>> {
