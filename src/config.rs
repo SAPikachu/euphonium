@@ -1,11 +1,11 @@
-use std::net::{Ipv4Addr};
+use std::net::{IpAddr};
 
 use serde_yaml;
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ServeConfig {
-    pub ip: Ipv4Addr,
+    pub ip: IpAddr,
     pub port: u16,
 }
 #[derive(Deserialize, Debug)]

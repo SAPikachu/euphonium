@@ -25,7 +25,7 @@ mod serve;
 mod resolver;
 mod config;
 
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::{SocketAddr};
 
 use resolver::RcResolver;
 use serve::{serve_tcp, serve_udp};
@@ -47,7 +47,7 @@ fn main() {
         let config = Config::default();
         let ip = config.serve.ip;
         let port = config.serve.port;
-        let addr = SocketAddr::V4(SocketAddrV4::new(ip, port));
+        let addr = SocketAddr::new(ip, port);
         info!("Listening on {}:{}", ip, port);
 
         let resolver = RcResolver::default();
