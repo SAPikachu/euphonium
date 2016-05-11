@@ -199,7 +199,6 @@ impl Default for Cache {
 mod tests {
     use super::*;
     use trust_dns::rr::*;
-    use trust_dns::op::*;
     use std::time::{SystemTime, Duration};
 
     use super::MIN_TTL;

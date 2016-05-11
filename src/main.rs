@@ -1,5 +1,6 @@
-#![feature(plugin)]
+#![feature(plugin, custom_derive)]
 #![plugin(clippy)]
+#![plugin(serde_macros)]
 
 extern crate env_logger;
 extern crate mio;
@@ -12,6 +13,8 @@ extern crate byteorder;
 extern crate itertools;
 #[macro_use] extern crate custom_derive;
 #[macro_use] extern crate newtype_derive;
+extern crate serde;
+extern crate serde_yaml;
 
 mod utils;
 mod transport;
@@ -20,13 +23,13 @@ mod nscache;
 mod query;
 mod serve;
 mod resolver;
+mod config;
 
 use std::net::{SocketAddr, SocketAddrV4};
 
-use mioco::mio::Ipv4Addr;
-
 use resolver::RcResolver;
 use serve::{serve_tcp, serve_udp};
+use config::Config;
 
 fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
     where F: FnOnce() -> T,
@@ -41,8 +44,9 @@ fn main() {
     env_logger::init().expect("What the ...?");
 
     mioco_config_start(move || {
-        let ip = Ipv4Addr::new(0, 0, 0, 0);
-        let port = 5354;
+        let config = Config::default();
+        let ip = config.serve.ip;
+        let port = config.serve.port;
         let addr = SocketAddr::V4(SocketAddrV4::new(ip, port));
         info!("Listening on {}:{}", ip, port);
 
