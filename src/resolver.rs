@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::mpsc::TryRecvError;
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
 use std::default::Default;
@@ -7,7 +6,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use mioco;
 use mioco::sync::Mutex;
-use mioco::sync::mpsc::{channel, Receiver, Sender};
+use mioco::sync::mpsc::{channel, Receiver};
 use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
@@ -32,7 +31,6 @@ pub struct Resolver {
     cache: Cache,
     ns_cache: NsCache,
     config: Config,
-    shutdown_notifier: Mutex<Sender<()>>,
 }
 custom_derive! {
     #[derive(Clone, NewtypeFrom, NewtypeDeref)]
@@ -41,15 +39,13 @@ custom_derive! {
 impl RcResolver {
     pub fn new(config: Config) -> Self {
         let (send, recv) = channel::<Query>();
-        let (shutdown_send, shutdown_recv) = channel::<()>();
         let ret: RcResolver = Arc::new(Resolver {
             cache: Cache::with_expiration_notifier(send),
             ns_cache: NsCache::default(),
             config: config,
-            shutdown_notifier: Mutex::new(shutdown_send),
         }).into();
         ret.init_root_servers();
-        ret.handle_cache_expiration_channel(recv, shutdown_recv);
+        ret.handle_cache_expiration_channel(recv);
         ret
     }
 }
@@ -355,37 +351,20 @@ impl RcResolver {
             entry.add_ns(*ip, Name::root(), None);
         }
     }
-    fn handle_cache_expiration_channel(&self, ch: Receiver<Query>, shutdown: Receiver<()>) {
+    fn handle_cache_expiration_channel(&self, ch: Receiver<Query>) {
         // FIXME: `Query` is not really thread-safe because of `Rc` in `Name`,
         // watch for memory leaks if we enable threading
-        let resolver = self.clone();
+        let resolver_weak = Arc::downgrade(&self.0);
         mioco::spawn(move || {
-            loop {
-                select!(
-                    r:shutdown => {
-                        match shutdown.try_recv() {
-                            Ok(_) => {
-                                return;
-                            },
-                            Err(TryRecvError::Empty) => {},
-                            Err(TryRecvError::Disconnected) => { return; },
-                        };
-                    },
-                    r:ch => {
-                        match ch.try_recv() {
-                            Ok(q) => {
-                                RecursiveResolver::resolve(&q, resolver.clone(), true).is_ok();
-                            },
-                            Err(TryRecvError::Empty) => {},
-                            Err(TryRecvError::Disconnected) => { return; },
-                        };
-                    },
-                );
+            while let Ok(q) = ch.recv() {
+                if let Some(res) = resolver_weak.upgrade() {
+                    RecursiveResolver::resolve(&q, res.into(), true).is_ok();
+                } else {
+                    break;
+                }
             }
+            debug!("Resolver is dropped, cache update coroutine is exiting");
         });
-    }
-    pub fn shutdown(&self) -> bool {
-        self.shutdown_notifier.lock().unwrap().send(()).is_ok()
     }
     fn resolve_recursive(&self, q: &Query) -> Result<Message> {
         RecursiveResolver::resolve(q, self.clone(), false)
@@ -428,7 +407,6 @@ mod tests {
             q.name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
             let result = resolver.resolve_recursive(&q).unwrap();
             assert!(result.get_answers().len() > 0);
-            resolver.shutdown();
         }).unwrap();
     }
 }
