@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, IpAddr, ToSocketAddrs};
+use std::net::{SocketAddr, IpAddr};
 use std::io;
 
 use rand;
@@ -56,13 +56,13 @@ fn query_core<T: DnsTransport>(q: Query, mut transport: BoundDnsTransport<T>, en
     }
 }
 fn get_bind_addr(target: &IpAddr) -> SocketAddr {
-    (match *target {
-        IpAddr::V4(_) => "0.0.0.0:0",
-        IpAddr::V6(_) => "[::]:0",
-    }).to_socket_addrs().unwrap().next().unwrap()
+    SocketAddr::new(match *target {
+        IpAddr::V4(_) => "0.0.0.0",
+        IpAddr::V6(_) => "[::]",
+    }.parse().unwrap(), 0)
 }
 pub fn query(q: Query, addr: IpAddr, enable_edns: bool) -> Result<Message> {
-    let target = try!(try!((addr, 53u16).to_socket_addrs()).next().ok_or::<Error>(io::ErrorKind::InvalidInput.into()));
+    let target = SocketAddr::new(addr, 53);
     let mut transport = try!(UdpSocket::bound(&get_bind_addr(&addr))).with_timeout(QUERY_TIMEOUT);
     match query_core(q, transport.bound(Some(&target)), enable_edns) {
         Ok(msg) => {
@@ -134,3 +134,22 @@ pub fn query_multiple(q: &Query, servers: &[IpAddr]) -> Result<Message> {
     query_multiple_handle_futures(&mut futures)
 }
 */
+
+#[cfg(test)]
+mod tests {
+    use trust_dns::op::*;
+    use trust_dns::rr::*;
+
+    use super::*;
+    use ::mioco_config_start;
+
+    #[test]
+    fn simple_query() {
+        mioco_config_start(|| {
+            let mut q = Query::new();
+            q.name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            let result = query(q, "8.8.8.8".parse().unwrap(), true).unwrap();
+            assert!(result.get_answers().len() > 0);
+        }).unwrap();
+    }
+}
