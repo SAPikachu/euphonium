@@ -58,7 +58,7 @@ fn query_core<T: DnsTransport>(q: Query, mut transport: BoundDnsTransport<T>, en
 fn get_bind_addr(target: &IpAddr) -> SocketAddr {
     SocketAddr::new(match *target {
         IpAddr::V4(_) => "0.0.0.0",
-        IpAddr::V6(_) => "[::]",
+        IpAddr::V6(_) => "::0",
     }.parse().unwrap(), 0)
 }
 pub fn query(q: Query, addr: IpAddr, enable_edns: bool) -> Result<Message> {

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::mpsc::TryRecvError;
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
 use std::default::Default;
@@ -6,7 +7,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use mioco;
 use mioco::sync::Mutex;
-use mioco::sync::mpsc::{channel, Receiver};
+use mioco::sync::mpsc::{channel, Receiver, Sender};
 use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
@@ -15,6 +16,7 @@ use utils::{Result, CloneExt, MessageExt, Future};
 use query::{query_multiple_handle_futures, query as query_one};
 use cache::Cache;
 use nscache::NsCache;
+use config::Config;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
@@ -29,20 +31,25 @@ pub enum ErrorKind {
 pub struct Resolver {
     cache: Cache,
     ns_cache: NsCache,
+    config: Config,
+    shutdown_notifier: Mutex<Sender<()>>,
 }
 custom_derive! {
     #[derive(Clone, NewtypeFrom, NewtypeDeref)]
     pub struct RcResolver(Arc<Resolver>);
 }
-impl Default for RcResolver {
-    fn default() -> Self {
+impl RcResolver {
+    pub fn new(config: Config) -> Self {
         let (send, recv) = channel::<Query>();
+        let (shutdown_send, shutdown_recv) = channel::<()>();
         let ret: RcResolver = Arc::new(Resolver {
             cache: Cache::with_expiration_notifier(send),
             ns_cache: NsCache::default(),
+            config: config,
+            shutdown_notifier: Mutex::new(shutdown_send),
         }).into();
         ret.init_root_servers();
-        ret.handle_cache_expiration_channel(recv);
+        ret.handle_cache_expiration_channel(recv, shutdown_recv);
         ret
     }
 }
@@ -340,49 +347,45 @@ impl RecursiveResolver {
     }
 }
 impl RcResolver {
-    #[allow(non_snake_case)]
     fn init_root_servers(&self) {
         let mut guard = self.ns_cache.lock().unwrap();
         let mut entry = guard.lookup_or_insert(&Name::root());
         entry.pin();
-        // TODO: Move this to configuration file
-        let ROOT_SERVERS = [
-            ("a.root-servers.net", "198.41.0.4"),
-            ("b.root-servers.net", "192.228.79.201"),
-            ("c.root-servers.net", "192.33.4.12"),
-            ("d.root-servers.net", "199.7.91.13"),
-            ("e.root-servers.net", "192.203.230.10"),
-            ("f.root-servers.net", "192.5.5.241"),
-            ("g.root-servers.net", "192.112.36.4"),
-            ("h.root-servers.net", "198.97.190.53"),
-            ("i.root-servers.net", "192.36.148.17"),
-            ("j.root-servers.net", "192.58.128.30"),
-            ("k.root-servers.net", "193.0.14.129"),
-            ("l.root-servers.net", "199.7.83.42"),
-            ("m.root-servers.net", "202.12.27.33"),
-        ];
-        for &(domain, ip) in &ROOT_SERVERS {
-            entry.add_ns(
-                IpAddr::V4(ip.parse().unwrap()),
-                Name::parse(domain, Some(Name::root()).as_ref()).unwrap(),
-                None,
-            );
+        for ip in &self.config.root_servers {
+            entry.add_ns(*ip, Name::root(), None);
         }
     }
-    fn handle_cache_expiration_channel(&self, ch: Receiver<Query>) {
+    fn handle_cache_expiration_channel(&self, ch: Receiver<Query>, shutdown: Receiver<()>) {
         // FIXME: `Query` is not really thread-safe because of `Rc` in `Name`,
         // watch for memory leaks if we enable threading
         let resolver = self.clone();
         mioco::spawn(move || {
             loop {
-                match ch.recv() {
-                    Ok(q) => {
-                        RecursiveResolver::resolve(&q, resolver.clone(), true).is_ok();
+                select!(
+                    r:shutdown => {
+                        match shutdown.try_recv() {
+                            Ok(_) => {
+                                return;
+                            },
+                            Err(TryRecvError::Empty) => {},
+                            Err(TryRecvError::Disconnected) => { return; },
+                        };
                     },
-                    Err(_) => { return; },
-                }
+                    r:ch => {
+                        match ch.try_recv() {
+                            Ok(q) => {
+                                RecursiveResolver::resolve(&q, resolver.clone(), true).is_ok();
+                            },
+                            Err(TryRecvError::Empty) => {},
+                            Err(TryRecvError::Disconnected) => { return; },
+                        };
+                    },
+                );
             }
         });
+    }
+    pub fn shutdown(&self) -> bool {
+        self.shutdown_notifier.lock().unwrap().send(()).is_ok()
     }
     fn resolve_recursive(&self, q: &Query) -> Result<Message> {
         RecursiveResolver::resolve(q, self.clone(), false)
@@ -404,5 +407,28 @@ impl RcResolver {
         let resp = try!(self.resolve_recursive(&msg.get_queries()[0]));
         msg.copy_resp_from(&resp);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use trust_dns::op::*;
+    use trust_dns::rr::*;
+
+    use super::*;
+    use ::mioco_config_start;
+    use ::config::*;
+
+    #[test]
+    fn simple_recursive_query() {
+        mioco_config_start(|| {
+            let config = Config::default();
+            let resolver = RcResolver::new(config);
+            let mut q = Query::new();
+            q.name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            let result = resolver.resolve_recursive(&q).unwrap();
+            assert!(result.get_answers().len() > 0);
+            resolver.shutdown();
+        }).unwrap();
     }
 }

@@ -12,6 +12,7 @@ pub struct ServeConfig {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub serve: ServeConfig,
+    pub root_servers: Vec<IpAddr>,
 }
 
 const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml");

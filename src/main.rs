@@ -50,7 +50,7 @@ fn main() {
         let addr = SocketAddr::new(ip, port);
         info!("Listening on {}:{}", ip, port);
 
-        let resolver = RcResolver::default();
+        let resolver = RcResolver::new(config);
         serve_tcp(&addr, resolver.clone()).expect("Failed to initialize TCP listener");
         serve_udp(&addr, resolver).expect("Failed to initialize UDP listener");
     }).expect("Unexpected error from mioco::start");
