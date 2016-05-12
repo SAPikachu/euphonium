@@ -11,7 +11,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, CloneExt, MessageExt, Future};
+use utils::{Result, CloneExt, MessageExt, Future, AsDisplay};
 use query::{query_multiple_handle_futures, query as query_one};
 use cache::Cache;
 use nscache::NsCache;
@@ -356,7 +356,24 @@ impl RcResolver {
         mioco::spawn(move || {
             while let Ok(q) = ch.recv() {
                 if let Some(res) = resolver_weak.upgrade() {
-                    RecursiveResolver::resolve(&q, res.into(), true).is_ok();
+                    let updated = match RecursiveResolver::resolve(
+                        &q, res.clone().into(), true
+                    ) {
+                        Ok(msg) => [ResponseCode::NoError, ResponseCode::NXDomain]
+                                   .contains(&msg.get_response_code()),
+                        Err(_) => false,
+                    };
+                    if !updated {
+                        res.cache.operate(q.get_name(), |entry, _| {
+                            let still_expired = entry.lookup_entry(q.get_query_type())
+                            .map_or(false, |x| x.is_expired());
+                            if still_expired {
+                                debug!("Purging cache entry due to failed update: {}",
+                                       q.as_disp());
+                                entry.purge(q.get_query_type());
+                            }
+                        });
+                    }
                 } else {
                     break;
                 }

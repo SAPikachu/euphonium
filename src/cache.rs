@@ -84,6 +84,12 @@ pub struct Entry {
     records: HashMap<RecordType, RecordTypeEntry>,
 }
 impl Entry {
+    pub fn lookup_entry(&self, t: RecordType) -> Option<&RecordTypeEntry> {
+        self.records.get(&t)
+    }
+    pub fn purge(&mut self, t: RecordType) -> Option<Message> {
+        self.records.remove(&t).map(|entry| entry.message)
+    }
     pub fn lookup_adjusted(&self, t: RecordType) -> Option<Message> {
         self.records.get(&t).map(|entry| {
             entry.maybe_notify_expiration();
