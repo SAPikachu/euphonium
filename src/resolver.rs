@@ -352,8 +352,6 @@ impl RcResolver {
         }
     }
     fn handle_cache_expiration_channel(&self, ch: Receiver<Query>) {
-        // FIXME: `Query` is not really thread-safe because of `Rc` in `Name`,
-        // watch for memory leaks if we enable threading
         let resolver_weak = Arc::downgrade(&self.0);
         mioco::spawn(move || {
             while let Ok(q) = ch.recv() {
