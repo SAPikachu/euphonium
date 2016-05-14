@@ -16,10 +16,17 @@ pub struct ServeConfig {
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+pub struct ForwarderConfig {
+    pub servers: Vec<IpAddr>,
+    pub accepted_ip_list: Option<String>,
+}
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serve: ServeConfig,
     pub root_servers: Vec<IpAddr>,
     pub cache: CacheConfig,
+    pub forwarders: Vec<ForwarderConfig>,
 }
 
 const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml");

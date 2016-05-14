@@ -38,7 +38,6 @@ impl RecordTypeEntry {
         if !self.is_expired() {
             return;
         }
-        // TODO: Maybe we need to notify later to handle SERVFAIL?
         if self.expiration_notified.load(Ordering::Relaxed) {
             // Already notified
             return;
