@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
 use std::default::Default;
@@ -36,6 +36,11 @@ custom_derive! {
     #[derive(Clone, NewtypeFrom, NewtypeDeref)]
     pub struct RcResolver(Arc<Resolver>);
 }
+custom_derive! {
+    #[derive(Clone, NewtypeFrom)]
+    pub struct RcResolverWeak(Weak<Resolver>);
+}
+
 impl RcResolver {
     pub fn new(config: Config) -> Self {
         let (send, recv) = channel::<Query>();
@@ -45,8 +50,32 @@ impl RcResolver {
             config: config,
         }).into();
         ret.init_root_servers();
+        ret.attach();
         ret.handle_cache_expiration_channel(recv);
         ret
+    }
+    pub fn to_weak(&self) -> RcResolverWeak {
+        RcResolverWeak(Arc::downgrade(self))
+    }
+    pub fn current_weak() -> RcResolverWeak {
+        mioco::get_userdata::<RcResolverWeak>()
+        .map_or_else(RcResolverWeak::empty, |x| (*x).clone())
+    }
+    pub fn current() -> Self {
+        Self::current_weak().upgrade().expect("Called `current()` without initialization")
+    }
+    fn attach(&self) {
+        assert!(RcResolver::current_weak().upgrade().is_none());
+        mioco::set_userdata(self.to_weak());
+        mioco::set_children_userdata(Some(self.to_weak()));
+    }
+}
+impl RcResolverWeak {
+    fn upgrade(&self) -> Option<RcResolver> {
+        self.0.upgrade().map(|x| x.into())
+    }
+    fn empty() -> Self {
+        RcResolverWeak(Weak::new())
     }
 }
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
@@ -352,7 +381,7 @@ impl RcResolver {
         }
     }
     fn handle_cache_expiration_channel(&self, ch: Receiver<Query>) {
-        let resolver_weak = Arc::downgrade(&self.0);
+        let resolver_weak = self.to_weak();
         mioco::spawn(move || {
             while let Ok(q) = ch.recv() {
                 if let Some(res) = resolver_weak.upgrade() {
@@ -408,6 +437,7 @@ impl RcResolver {
 mod tests {
     use trust_dns::op::*;
     use trust_dns::rr::*;
+    use mioco;
 
     use super::*;
     use ::mioco_config_start;
@@ -422,6 +452,34 @@ mod tests {
             q.name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
             let result = resolver.resolve_recursive(&q).unwrap();
             assert!(result.get_answers().len() > 0);
+        }).unwrap();
+    }
+    #[test]
+    #[allow(unused_variables)]
+    fn current() {
+        mioco_config_start(|| {
+            let config = Config::default();
+            let resolver = RcResolver::new(config);
+            RcResolver::current();
+            mioco::spawn(move || {
+                RcResolver::current();
+                mioco::spawn(move || {
+                    RcResolver::current();
+                }).join().unwrap();
+            }).join().unwrap();
+        }).unwrap();
+    }
+    #[test]
+    #[should_panic]
+    #[allow(unused_variables)]
+    fn no_multiple_instances() {
+        // FIXME: We have to use mioco::start here, using `mioco_config_start` (which
+        // doesn't handle panics in coroutines) will crash the test process
+        mioco::start(|| {
+            let config = Config::default();
+            let resolver = RcResolver::new(config);
+            let config = Config::default();
+            let resolver2 = RcResolver::new(config);
         }).unwrap();
     }
 }

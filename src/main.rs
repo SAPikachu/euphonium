@@ -2,6 +2,10 @@
 #![plugin(clippy)]
 #![plugin(serde_macros)]
 
+#![feature(downgraded_weak)]
+
+#![recursion_limit="128"]
+
 extern crate env_logger;
 extern crate mio;
 #[macro_use] extern crate mioco;
