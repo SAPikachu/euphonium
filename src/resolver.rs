@@ -30,7 +30,7 @@ pub enum ErrorKind {
 pub struct Resolver {
     cache: Cache,
     ns_cache: NsCache,
-    config: Config,
+    pub config: Config,
 }
 custom_derive! {
     #[derive(Clone, NewtypeFrom, NewtypeDeref)]
@@ -70,8 +70,13 @@ impl RcResolver {
         mioco::set_children_userdata(Some(self.to_weak()));
     }
 }
+impl Default for RcResolver {
+    fn default() -> Self {
+        Self::new(Config::default())
+    }
+}
 impl RcResolverWeak {
-    fn upgrade(&self) -> Option<RcResolver> {
+    pub fn upgrade(&self) -> Option<RcResolver> {
         self.0.upgrade().map(|x| x.into())
     }
     fn empty() -> Self {

@@ -4,6 +4,10 @@ serve:
     ip: "127.0.0.1"
     port: 5354
 
+cache:
+    min_cache_ttl: 60
+    min_response_ttl: 1
+
 root_servers:
     - "198.41.0.4"
     - "192.228.79.201"

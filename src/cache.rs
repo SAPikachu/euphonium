@@ -10,9 +10,7 @@ use trust_dns::rr::{Name, RecordType, Record};
 use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
 
 use utils::{CloneExt, MessageExt, AsDisplay};
-
-const MIN_TTL: u32 = 1;
-const MIN_CACHE_TTL: u32 = 60;
+use resolver::{RcResolver, RcResolverWeak};
 
 pub type Key = Name;
 
@@ -23,32 +21,13 @@ pub enum TtlMode {
     Fixed(u32),
     Relative(SystemTime),
 }
-impl TtlMode {
-    pub fn adjust(&self, rec: &mut Record) {
-        match *self {
-            TtlMode::Original => {},
-            TtlMode::Fixed(secs) => { rec.ttl(secs); },
-            TtlMode::Relative(relto) => {
-                match relto.elapsed() {
-                    Err(e) => {
-                        warn!("Failed to get elapsed time for setting TTL: {:?}", e);
-                    },
-                    Ok(dur) => {
-                        let diff = min(dur.as_secs(), i32::max_value() as u64) as u32;
-                        let new_ttl = rec.get_ttl().saturating_sub(diff);
-                        rec.ttl(max(MIN_TTL, new_ttl));
-                    },
-                };
-            },
-        };
-    }
-}
 pub struct RecordTypeEntry {
     message: Message,
     expiration: Option<SystemTime>,
     ttl: TtlMode,
     expiration_notifier: Option<Sender<Query>>,
     expiration_notified: AtomicBool,
+    resolver: RcResolverWeak,
 }
 impl RecordTypeEntry {
     pub fn maybe_notify_expiration(&self) {
@@ -78,6 +57,27 @@ impl RecordTypeEntry {
             Some(ref t) => t <= &SystemTime::now(),
         }
     }
+    pub fn adjust_ttl(&self, rec: &mut Record) {
+        match self.ttl {
+            TtlMode::Original => {},
+            TtlMode::Fixed(secs) => { rec.ttl(secs); },
+            TtlMode::Relative(relto) => {
+                match relto.elapsed() {
+                    Err(e) => {
+                        warn!("Failed to get elapsed time for setting TTL: {:?}", e);
+                    },
+                    Ok(dur) => {
+                        let diff = min(dur.as_secs(), i32::max_value() as u64) as u32;
+                        let mut new_ttl = rec.get_ttl().saturating_sub(diff);
+                        if let Some(res) = self.resolver.upgrade() {
+                            new_ttl = max(new_ttl, res.config.cache.min_response_ttl);
+                        }
+                        rec.ttl(new_ttl);
+                    },
+                };
+            },
+        };
+    }
 }
 #[derive(Default)]
 pub struct Entry {
@@ -96,7 +96,7 @@ impl Entry {
             let mut ret = Message::new();
             ret.copy_resp_with(&entry.message, |rec| {
                 let mut new_rec = rec.clone();
-                entry.ttl.adjust(&mut new_rec);
+                entry.adjust_ttl(&mut new_rec);
                 new_rec
             });
             ret
@@ -116,9 +116,11 @@ impl Entry {
         .chain(msg.get_additional())
         .filter(|x| x.get_rr_type() != RecordType::OPT);
         // TODO: NXDomain should be cached for shorter time
+        let resolver = RcResolver::current();
+        let min_cache_ttl = resolver.config.cache.min_cache_ttl;
         let cache_ttl = max(
-            MIN_CACHE_TTL,
-            all_records.map(|x| x.get_ttl()).min().unwrap_or(MIN_CACHE_TTL),
+            min_cache_ttl,
+            all_records.map(|x| x.get_ttl()).min().unwrap_or(min_cache_ttl),
         ) as u64;
         debug!("Updating cache: {} -> {} (TTL: {})",
                msg.get_queries()[0].as_disp(), msg.as_disp(), cache_ttl);
@@ -130,6 +132,7 @@ impl Entry {
             ttl: TtlMode::Relative(SystemTime::now()),
             expiration_notifier: expiration_notifier,
             expiration_notified: AtomicBool::new(false),
+            resolver: resolver.to_weak(),
         });
     }
 }
@@ -203,11 +206,13 @@ impl Default for Cache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use trust_dns::rr::*;
+    use std::sync::atomic::*;
     use std::time::{SystemTime, Duration};
-
-    use super::MIN_TTL;
+    use trust_dns::rr::*;
+    use trust_dns::op::*;
+    use super::*;
+    use resolver::*;
+    use ::mioco_config_start;
 
     fn name(raw: &str) -> Name {
         Name::parse(raw, Some(&Name::root())).unwrap()
@@ -222,31 +227,49 @@ mod tests {
     }
     #[test]
     fn test_ttl_adjust() {
-        let mut rec = Record::new();
-        rec.ttl(120);
-        TtlMode::Original.adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), 120);
-        TtlMode::Fixed(240).adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), 240);
+        mioco_config_start(move || {
+            let resolver = RcResolver::default();
+            let min_ttl = resolver.config.cache.min_response_ttl;
+            let mut entry = RecordTypeEntry {
+                message: Message::new(),
+                expiration: None,
+                ttl: TtlMode::Original,
+                expiration_notifier: None,
+                expiration_notified: AtomicBool::new(false),
+                resolver: resolver.to_weak(),
+            };
+            let mut rec = Record::new();
+            macro_rules! adjust {
+                ($e:expr) => {{
+                    entry.ttl = $e;
+                    entry.adjust_ttl(&mut rec);
+                }};
+            };
+            rec.ttl(120);
+            adjust!(TtlMode::Original);
+            assert_eq!(rec.get_ttl(), 120);
+            adjust!(TtlMode::Fixed(240));
+            assert_eq!(rec.get_ttl(), 240);
 
-        TtlMode::Relative(SystemTime::now()).adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), 240);
-        TtlMode::Relative(SystemTime::now() - Duration::from_secs(10)).adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), 230);
-        TtlMode::Relative(SystemTime::now() - Duration::new(10, 999999999)).adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), 219);
-        TtlMode::Relative(SystemTime::now() - Duration::from_secs(500)).adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), MIN_TTL);
+            adjust!(TtlMode::Relative(SystemTime::now()));
+            assert_eq!(rec.get_ttl(), 240);
+            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(10)));
+            assert_eq!(rec.get_ttl(), 230);
+            adjust!(TtlMode::Relative(SystemTime::now() - Duration::new(10, 999999999)));
+            assert_eq!(rec.get_ttl(), 219);
+            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(500)));
+            assert_eq!(rec.get_ttl(), min_ttl);
 
-        rec.ttl(240);
-        TtlMode::Relative(SystemTime::now() - Duration::from_secs(u32::max_value() as u64)).adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), MIN_TTL);
-        rec.ttl(240);
+            rec.ttl(240);
+            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(u32::max_value() as u64)));
+            assert_eq!(rec.get_ttl(), min_ttl);
+            rec.ttl(240);
 
-        // `Using Duration::from_secs(u64::max_value())` will silently overflow and give us
-        // incorrect result, so we test with `u64::max_value() >> 1` here.
-        // Ref: https://github.com/rust-lang/rust/issues/32070
-        TtlMode::Relative(SystemTime::now() - Duration::from_secs(u64::max_value() >> 1)).adjust(&mut rec);
-        assert_eq!(rec.get_ttl(), MIN_TTL);
+            // Using `Duration::from_secs(u64::max_value())` will silently overflow and give us
+            // incorrect result, so we test with `u64::max_value() >> 1` here.
+            // Ref: https://github.com/rust-lang/rust/issues/32070
+            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(u64::max_value() >> 1)));
+            assert_eq!(rec.get_ttl(), min_ttl);
+        }).unwrap();
     }
 }

@@ -4,6 +4,12 @@ use serde_yaml;
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+pub struct CacheConfig {
+    pub min_cache_ttl: u32,
+    pub min_response_ttl: u32,
+}
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ServeConfig {
     pub ip: IpAddr,
     pub port: u16,
@@ -13,6 +19,7 @@ pub struct ServeConfig {
 pub struct Config {
     pub serve: ServeConfig,
     pub root_servers: Vec<IpAddr>,
+    pub cache: CacheConfig,
 }
 
 const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml");
