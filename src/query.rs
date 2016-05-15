@@ -11,7 +11,6 @@ use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future, AsDisplay}
 use utils::with_timeout::TcpStreamExt;
 use transport::{DnsTransport, BoundDnsTransport};
 
-pub const QUERY_TIMEOUT: i64 = 5000;
 pub const EDNS_VER: u8 = 0;
 pub const EDNS_MAX_PAYLOAD: u16 = 1200;
 
@@ -67,7 +66,7 @@ pub fn query(q: Query, addr: IpAddr, timeout: Duration) -> Result<Message> {
                                          .map(|_| stream))
                 .and_then(|stream| query_core(
                     msg.get_queries()[0].clone(),
-                    stream.with_timeout(QUERY_TIMEOUT).bound(Some(&target)),
+                    stream.with_timeout(timeout).bound(Some(&target)),
                     true,
                 ));
                 Ok(tcp_result.unwrap_or(msg))

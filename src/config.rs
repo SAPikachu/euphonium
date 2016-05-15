@@ -47,6 +47,7 @@ pub struct CacheConfig {
 pub struct ServeConfig {
     pub ip: IpAddr,
     pub port: u16,
+    pub tcp_timeout: ProxiedValue<u32, Duration>,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]

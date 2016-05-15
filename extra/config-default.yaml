@@ -3,6 +3,7 @@
 serve:
     ip: "127.0.0.1"
     port: 5354
+    tcp_timeout: 5 # Seconds
 
 cache:
     min_cache_ttl: 60
@@ -23,6 +24,9 @@ forwarders:
         - "202.96.128.166"
         - "202.96.134.133"
       accepted_ip_list: "extra/chn_networks.txt"
+
+query:
+    timeout: 5 # Seconds
 
 root_servers:
     - "198.41.0.4"

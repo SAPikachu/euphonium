@@ -11,7 +11,7 @@ use trust_dns::rr::DNSClass;
 
 use utils::{Result, Error, MessageExt, WithTimeout};
 use transport::{DnsTransport};
-use query::{EDNS_VER, QUERY_TIMEOUT};
+use query::{EDNS_VER};
 use resolver::{RcResolver};
 
 /// This function should never fail, otherwise we have a panic
@@ -101,8 +101,8 @@ pub fn serve_tcp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<(
             sock.set_nodelay(true).unwrap_or(());
             let sock_clone = sock.try_clone().expect("Failed to clone TCP socket");
             serve_transport_async(
-                sock.with_resetting_timeout(QUERY_TIMEOUT),
-                sock_clone.with_resetting_timeout(QUERY_TIMEOUT),
+                sock.with_resetting_timeout(*resolver.config.serve.tcp_timeout),
+                sock_clone.with_resetting_timeout(*resolver.config.serve.tcp_timeout),
                 resolver.clone(),
                 |e| trace!("Client TCP connection is broken: {:?}", e)
             );
