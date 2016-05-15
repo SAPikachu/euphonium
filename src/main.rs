@@ -29,6 +29,7 @@ mod serve;
 mod resolver;
 mod config;
 mod recursive;
+mod forwarding;
 
 use std::net::{SocketAddr};
 

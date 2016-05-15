@@ -13,6 +13,7 @@ use utils::{Result, CloneExt, MessageExt, Future};
 use query::{query_multiple_handle_futures, query as query_one};
 use cache::Cache;
 use nscache::NsCache;
+use config::Config;
 use resolver::{ErrorKind, RcResolver};
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
@@ -58,6 +59,9 @@ impl RecursiveResolver {
     }
     fn get_ns_cache(&self) -> &NsCache {
         &self.state.parent.ns_cache
+    }
+    fn get_config(&self) -> &Config {
+        &self.state.parent.config
     }
     fn query(&self) -> Result<Message> {
         // TODO: Handle expiration
@@ -132,7 +136,7 @@ impl RecursiveResolver {
         Some(Future::from_fn(move || inst.query_ns(ns_clone)))
     }
     fn query_ns(self, ns: IpAddr) -> Result<Message> {
-        let result = try!(query_one(self.state.query.clone(), ns, true));
+        let result = try!(query_one(self.state.query.clone(), ns, *self.get_config().query.timeout));
         if result.get_response_code() != ResponseCode::NoError {
             return Ok(result);
         }

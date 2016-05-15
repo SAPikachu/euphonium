@@ -45,8 +45,10 @@ pub struct BoundDnsTransport<'a, T: ?Sized> where T: DnsTransport + 'a {
     addr: Option<&'a SocketAddr>,
 }
 impl<'a, T> BoundDnsTransport<'a, T> where T: DnsTransport + 'a {
-    pub fn recv_msg(&mut self) -> Result<(Message, Option<SocketAddr>)> {
-        self.transport.recv_msg(self.addr)
+    pub fn recv_msg(&mut self) -> Result<Message> {
+        let (msg, addr) = try!(self.transport.recv_msg(self.addr));
+        debug_assert!(addr.as_ref() == self.addr || self.addr.is_none());
+        Ok(msg)
     }
     pub fn send_msg(&mut self, msg: &Message) -> Result<()> {
         self.transport.send_msg(msg, self.addr)

@@ -1,5 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use mio;
 use mioco;
@@ -34,15 +35,39 @@ fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Tim
     }
 }
 
+pub trait AsTimeoutMs {
+    fn as_timeout_ms(&self) -> i64;
+}
+impl AsTimeoutMs for i64 {
+    fn as_timeout_ms(&self) -> i64 {
+        *self as i64
+    }
+}
+impl AsTimeoutMs for i32 {
+    fn as_timeout_ms(&self) -> i64 {
+        *self as i64
+    }
+}
+impl AsTimeoutMs for u32 {
+    fn as_timeout_ms(&self) -> i64 {
+        *self as i64
+    }
+}
+impl AsTimeoutMs for Duration {
+    fn as_timeout_ms(&self) -> i64 {
+        debug_assert!(self.as_secs() < u32::max_value() as u64);
+        (self.as_secs() * 1000) as i64
+    }
+}
 pub trait TcpStreamExt where Self: Sized {
-    fn connect_with_timeout(addr: &SocketAddr, timeout_ms: i64) -> io::Result<Self>;
+    fn connect_with_timeout<TMs: AsTimeoutMs>(addr: &SocketAddr, timeout: TMs) -> io::Result<Self>;
 }
 impl TcpStreamExt for TcpStream {
-    fn connect_with_timeout(addr: &SocketAddr, timeout_ms: i64) -> io::Result<Self> {
+    fn connect_with_timeout<TMs: AsTimeoutMs>(addr: &SocketAddr, timeout: TMs) -> io::Result<Self> {
         let mio_stream = try!(mio::tcp::TcpStream::connect(addr));
         let mut ret = MioAdapter::new(mio_stream);
         let mut timer = Timer::new();
-        timer.set_timeout(timeout_ms);
+        timer.set_timeout(timeout.as_timeout_ms());
         try!(invoke_with_timeout(
             &mut ret,
             mioco::RW::write(),
@@ -97,11 +122,11 @@ impl<T> io::Write for WithTimeoutState<MioAdapter<T>> where T: 'static + mio::Ev
 }
 pub trait WithTimeout<T> where T: Evented, Self: Sized {
     fn with_timeout_core(self, timeout_ms: i64, reset_before_invoke: bool) -> WithTimeoutState<T>;
-    fn with_timeout(self, timeout_ms: i64) -> WithTimeoutState<T> {
-        self.with_timeout_core(timeout_ms, false)
+    fn with_timeout<TMs: AsTimeoutMs>(self, timeout: TMs) -> WithTimeoutState<T> {
+        self.with_timeout_core(timeout.as_timeout_ms(), false)
     }
-    fn with_resetting_timeout(self, timeout_ms: i64) -> WithTimeoutState<T> {
-        self.with_timeout_core(timeout_ms, true)
+    fn with_resetting_timeout<TMs: AsTimeoutMs>(self, timeout: TMs) -> WithTimeoutState<T> {
+        self.with_timeout_core(timeout.as_timeout_ms(), true)
     }
 }
 impl<T> WithTimeout<T> for T where T: Evented {
