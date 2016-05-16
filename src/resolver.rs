@@ -5,12 +5,15 @@ use mioco;
 use mioco::sync::mpsc::{channel, Receiver};
 use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{Name};
+use itertools::Itertools;
 
-use utils::{Result, MessageExt, AsDisplay};
+use utils::{Result, MessageExt, AsDisplay, Future, CloneExt};
 use cache::Cache;
 use nscache::NsCache;
 use config::Config;
 use recursive::RecursiveResolver;
+use forwarding::ForwardingResolver;
+use query::query_multiple_handle_futures;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
@@ -26,6 +29,7 @@ pub struct Resolver {
     pub cache: Cache,
     pub ns_cache: NsCache,
     pub config: Config,
+    forwarders: Vec<Arc<ForwardingResolver>>,
 }
 custom_derive! {
     #[derive(Clone, NewtypeFrom, NewtypeDeref)]
@@ -38,11 +42,13 @@ custom_derive! {
 
 impl RcResolver {
     pub fn new(config: Config) -> Self {
+        let forwarders = ForwardingResolver::create_all(&config);
         let (send, recv) = channel::<Query>();
         let ret: RcResolver = Arc::new(Resolver {
             cache: Cache::with_expiration_notifier(send),
             ns_cache: NsCache::default(),
             config: config,
+            forwarders: forwarders,
         }).into();
         ret.init_root_servers();
         ret.attach();
@@ -117,8 +123,19 @@ impl RcResolver {
             debug!("Resolver is dropped, cache update coroutine is exiting");
         });
     }
-    fn resolve_recursive(&self, q: &Query) -> Result<Message> {
-        RecursiveResolver::resolve(q, self.clone(), false)
+    fn resolve_recursive(self, q: Query) -> Result<Message> {
+        RecursiveResolver::resolve(&q, self, false)
+    }
+    fn resolve_internal(&self, q: &Query) -> Result<Message> {
+        let mut futures = self.forwarders.iter().cloned().map(move |forwarder| {
+            let qc = (*q).clone();
+            let res = self.clone();
+            Future::from_fn(move || forwarder.resolve(qc, res))
+        }).collect_vec();
+        let qc = (*q).clone();
+        let res = self.clone();
+        futures.push(Future::from_fn(move || res.resolve_recursive(qc)));
+        query_multiple_handle_futures(&mut futures)
     }
     pub fn resolve(&self, msg: &mut Message) -> Result<()> {
         debug_assert!(msg.get_queries().len() == 1);
@@ -134,7 +151,7 @@ impl RcResolver {
         if cache_hit {
             return Ok(());
         }
-        let resp = try!(self.resolve_recursive(&msg.get_queries()[0]));
+        let resp = try!(self.resolve_internal(&msg.get_queries()[0]));
         msg.copy_resp_from(&resp);
         Ok(())
     }
@@ -157,7 +174,7 @@ mod tests {
             let resolver = RcResolver::new(config);
             let mut q = Query::new();
             q.name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
-            let result = resolver.resolve_recursive(&q).unwrap();
+            let result = resolver.resolve_recursive(q).unwrap();
             assert!(result.get_answers().len() > 0);
         }).unwrap();
     }

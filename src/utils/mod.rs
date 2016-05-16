@@ -122,6 +122,7 @@ impl MessageExt for Message {
         where F: FnMut(&Record) -> Record,
     {
         self.response_code(other.get_response_code());
+        self.message_type(other.get_message_type());
         other.get_answers().iter()
         .map(|x| f(x))
         .foreach(|x| { self.add_answer(x); });

@@ -6,7 +6,7 @@ serve:
     tcp_timeout: 5 # Seconds
 
 cache:
-    min_cache_ttl: 60
+    min_cache_ttl: 15
     min_response_ttl: 1
 
 forwarders:

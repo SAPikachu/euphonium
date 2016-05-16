@@ -11,7 +11,7 @@ use itertools::Itertools;
 
 use utils::{Result, CloneExt, MessageExt, Future};
 use query::{query_multiple_handle_futures, query as query_one};
-use cache::Cache;
+use cache::{Cache, RecordSource};
 use nscache::NsCache;
 use config::Config;
 use resolver::{ErrorKind, RcResolver};
@@ -286,7 +286,7 @@ impl RecursiveResolver {
         )
     }
     fn update_cache(&self, msg: &Message) {
-        self.get_cache().update_from_message(msg);
+        self.get_cache().update_from_message(msg, RecordSource::Recursive);
     }
     pub fn resolve(q: &Query, parent: RcResolver, skip_cache: bool) -> Result<Message> {
         let resolver = RecursiveResolver {

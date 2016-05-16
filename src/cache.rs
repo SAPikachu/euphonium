@@ -21,6 +21,12 @@ pub enum TtlMode {
     Fixed(u32),
     Relative(SystemTime),
 }
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecordSource {
+    Forwarder,
+    Recursive,
+    Pinned,
+}
 pub struct RecordTypeEntry {
     message: Message,
     expiration: Option<SystemTime>,
@@ -28,6 +34,7 @@ pub struct RecordTypeEntry {
     expiration_notifier: Option<Sender<Query>>,
     expiration_notified: AtomicBool,
     resolver: RcResolverWeak,
+    source: RecordSource,
 }
 impl RecordTypeEntry {
     pub fn maybe_notify_expiration(&self) {
@@ -101,7 +108,7 @@ impl Entry {
             ret
         })
     }
-    pub fn update(&mut self, msg: &Message, expiration_notifier: Option<Sender<Query>>) {
+    pub fn update(&mut self, msg: &Message, expiration_notifier: Option<Sender<Query>>, source: RecordSource) {
         // TODO: Validate message before updating
         // TODO: Confirm that the new message is more preferable than existing one
         assert!(msg.get_queries().len() == 1);
@@ -109,6 +116,12 @@ impl Entry {
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
         if !accepted_responses.contains(&msg.get_response_code()) {
             return;
+        }
+        if let Some(existing) = self.records.get(&t) {
+            if !existing.is_expired() && existing.source >= source {
+                // Existing record is more preferable
+                return;
+            }
         }
         let all_records = msg.get_answers().iter()
         .chain(msg.get_name_servers())
@@ -132,6 +145,7 @@ impl Entry {
             expiration_notifier: expiration_notifier,
             expiration_notified: AtomicBool::new(false),
             resolver: resolver.to_weak(),
+            source: source,
         });
     }
 }
@@ -176,7 +190,7 @@ impl Cache {
         let notifier = guard.expiration_notifier.clone();
         op(guard.lookup_or_insert(key), notifier)
     }
-    pub fn update_from_message(&self, msg: &Message) {
+    pub fn update_from_message(&self, msg: &Message, source: RecordSource) {
         if cfg!(debug_assertions) {
             assert!(msg.get_op_code() == OpCode::Query);
             assert!(msg.get_message_type() == MessageType::Response);
@@ -189,7 +203,7 @@ impl Cache {
             }
         }
         let name = msg.get_queries()[0].get_name();
-        self.operate(name, |entry, notifier| entry.update(&msg, notifier));
+        self.operate(name, |entry, notifier| entry.update(&msg, notifier, source));
     }
 }
 impl Default for Cache {
@@ -211,10 +225,54 @@ mod tests {
     use trust_dns::op::*;
     use super::*;
     use resolver::*;
+    use utils::*;
     use ::mioco_config_start;
 
     fn name(raw: &str) -> Name {
         Name::parse(raw, Some(&Name::root())).unwrap()
+    }
+    #[test]
+    fn test_record_preference() {
+        mioco_config_start(move || {
+            let resolver = RcResolver::default();
+            let mut msg1 = Message::new();
+            msg1.message_type(MessageType::Response);
+            msg1.op_code(OpCode::Query);
+            let name = Name::parse("www.google.com", Some(&Name::root())).unwrap();
+            let t = RecordType::A;
+            let mut q = Query::new();
+            q.name(name.clone());
+            q.query_type(t);
+            msg1.add_query(q.clone());
+            let mut msg2 = msg1.clone_resp_for(&q);
+            let mut rec = Record::new();
+            rec.ttl(3600);
+            rec.name(name.clone());
+            msg1.add_answer(rec.clone());
+            msg2.add_answer(rec.clone());
+            msg2.add_answer(rec.clone());
+
+            let cache = &resolver.cache;
+            assert!(cache.lookup_with_type(&name, t, |x| x).is_none());
+            cache.update_from_message(&msg1, RecordSource::Forwarder);
+            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 1);
+
+            // Should replace cache with better message
+            cache.update_from_message(&msg2, RecordSource::Recursive);
+            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 2);
+
+            // Should not replace cache with worse message
+            cache.update_from_message(&msg1, RecordSource::Forwarder);
+            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 2);
+
+            // Should not replace cache until expiration
+            cache.update_from_message(&msg1, RecordSource::Recursive);
+            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 2);
+
+            // Even better message
+            cache.update_from_message(&msg1, RecordSource::Pinned);
+            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 1);
+        }).unwrap();
     }
     #[test]
     fn test_cache_case_insensitivity() {
@@ -236,6 +294,7 @@ mod tests {
                 expiration_notifier: None,
                 expiration_notified: AtomicBool::new(false),
                 resolver: resolver.to_weak(),
+                source: RecordSource::Pinned,
             };
             let mut rec = Record::new();
             macro_rules! adjust {
