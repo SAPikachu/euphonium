@@ -2,9 +2,14 @@ use std::net::{IpAddr};
 use std::time::Duration;
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::error::Error;
+use std::sync::Arc;
 
 use serde_yaml;
 use serde::{Deserialize, Deserializer};
+use serde::de::Error as DesError;
+
+use utils::IpSet;
 
 #[derive(Debug)]
 pub struct ProxiedValue<TStorage, TValue>(TValue, PhantomData<TStorage>);
@@ -35,6 +40,13 @@ impl FromStorage<u32> for Duration {
         Ok(Duration::from_secs(storage as u64))
     }
 }
+impl FromStorage<String> for Arc<IpSet> {
+    fn from_storage<TDes: ?Sized + Deserializer>(storage: String) -> Result<Self, TDes::Error> {
+        IpSet::from_file(&storage)
+        .map(Arc::new)
+        .map_err(|e| TDes::Error::custom(e.description()))
+    }
+}
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -53,7 +65,7 @@ pub struct ServeConfig {
 #[serde(deny_unknown_fields)]
 pub struct ForwarderConfig {
     pub servers: Vec<IpAddr>,
-    pub accepted_ip_list: Option<String>,
+    pub accepted_ip_list: Option<ProxiedValue<String, Arc<IpSet>>>,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]

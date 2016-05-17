@@ -65,7 +65,7 @@ impl RecursiveResolver {
     }
     fn query(&self) -> Result<Message> {
         // TODO: Handle expiration
-        let ns = self.get_ns_cache().lookup_recursive(&self.state.query.get_name());
+        let ns = self.get_ns_cache().lookup_recursive(self.state.query.get_name());
         self.query_ns_multiple(ns, None)
     }
     fn query_ns_domain(&self, auth_zone: &Name, ns: &Name) -> Result<Message> {

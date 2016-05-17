@@ -203,7 +203,7 @@ impl Cache {
             }
         }
         let name = msg.get_queries()[0].get_name();
-        self.operate(name, |entry, notifier| entry.update(&msg, notifier, source));
+        self.operate(name, |entry, notifier| entry.update(msg, notifier, source));
     }
 }
 impl Default for Cache {

@@ -24,6 +24,7 @@ pub enum ErrorKind {
     InsaneNsReferral,
     /// Another coroutine is already working on the query
     LostRace,
+    RejectedIp,
 }
 pub struct Resolver {
     pub cache: Cache,

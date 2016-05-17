@@ -83,7 +83,7 @@ impl NsCache {
         where T: IntoIterator<Item=(IpAddr, Name, u64)>,
     {
         let mut guard = self.lock().unwrap();
-        let entry = guard.lookup_or_insert(&auth_zone);
+        let entry = guard.lookup_or_insert(auth_zone);
         for (ip, name, ttl) in items {
             entry.add_ns(ip, name, Some(ttl));
         }

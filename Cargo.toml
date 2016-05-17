@@ -25,3 +25,4 @@ custom_derive = "0.1.*"
 serde = { version = "^0.7", features = ["nightly"] }
 serde_macros = "^0.7"
 serde_yaml = "^0.2"
+treebitmap = "^0.2"

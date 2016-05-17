@@ -19,6 +19,7 @@ extern crate itertools;
 #[macro_use] extern crate newtype_derive;
 extern crate serde;
 extern crate serde_yaml;
+extern crate treebitmap;
 
 mod utils;
 mod transport;
