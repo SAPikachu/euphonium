@@ -9,14 +9,14 @@ use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 
 use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future, AsDisplay};
 use utils::with_timeout::TcpStreamExt;
-use transport::{DnsTransport, BoundDnsTransport};
+use transport::{DnsTransport, DnsMsgTransport};
 
 pub const EDNS_VER: u8 = 0;
 pub const EDNS_MAX_PAYLOAD: u16 = 1200;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
-fn query_core<T: DnsTransport>(q: Query, mut transport: BoundDnsTransport<T>, enable_edns: bool) -> Result<Message> {
+fn query_core<T: DnsMsgTransport>(q: Query, mut transport: T, enable_edns: bool) -> Result<Message> {
     let mut msg : Message = Message::new();
     msg.message_type(MessageType::Query);
     msg.id(rand::random());

@@ -1,6 +1,7 @@
 use std::io;
 use std::io::{Read, Write};
 use std::fmt;
+use std::fmt::{Display};
 
 use std::net::SocketAddr;
 
@@ -39,18 +40,21 @@ pub trait DnsTransport {
         }
     }
 }
-#[derive(Debug)]
 pub struct BoundDnsTransport<'a, T: ?Sized> where T: DnsTransport + 'a {
     transport: &'a mut T,
     addr: Option<&'a SocketAddr>,
 }
-impl<'a, T> BoundDnsTransport<'a, T> where T: DnsTransport + 'a {
-    pub fn recv_msg(&mut self) -> Result<Message> {
+pub trait DnsMsgTransport: Display {
+    fn recv_msg(&mut self) -> Result<Message>;
+    fn send_msg(&mut self, msg: &Message) -> Result<()>;
+}
+impl<'a, T> DnsMsgTransport for BoundDnsTransport<'a, T> where T: DnsTransport + 'a {
+    fn recv_msg(&mut self) -> Result<Message> {
         let (msg, addr) = try!(self.transport.recv_msg(self.addr));
         debug_assert!(addr.as_ref() == self.addr || self.addr.is_none());
         Ok(msg)
     }
-    pub fn send_msg(&mut self, msg: &Message) -> Result<()> {
+    fn send_msg(&mut self, msg: &Message) -> Result<()> {
         self.transport.send_msg(msg, self.addr)
     }
 }
