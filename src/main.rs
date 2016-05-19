@@ -1,12 +1,11 @@
 #![feature(plugin, custom_derive)]
+#![feature(downgraded_weak)]
+
 #![plugin(clippy)]
 #![plugin(serde_macros)]
 #![plugin(docopt_macros)]
 
-#![feature(downgraded_weak)]
-
 #![recursion_limit="128"]
-
 
 extern crate env_logger;
 extern crate mio;
