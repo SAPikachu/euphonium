@@ -2,8 +2,10 @@ use std::net::{IpAddr};
 use std::time::Duration;
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::error::Error;
 use std::sync::Arc;
+use std::io;
+use std::fs::File;
+use std::io::{Read};
 
 use serde_yaml;
 use serde::{Deserialize, Deserializer};
@@ -44,7 +46,9 @@ impl FromStorage<String> for Arc<IpSet> {
     fn from_storage<TDes: ?Sized + Deserializer>(storage: String) -> Result<Self, TDes::Error> {
         IpSet::from_file(&storage)
         .map(Arc::new)
-        .map_err(|e| TDes::Error::custom(e.description()))
+        .map_err(|e| TDes::Error::custom(format!(
+            "Failed to load IP list from {}: {}", storage, e,
+        )))
     }
 }
 
@@ -86,6 +90,15 @@ const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml"
 impl Default for Config {
     fn default() -> Self {
         serde_yaml::from_str(DEFAULT_CONFIG).expect("Default config should never fail")
+    }
+}
+impl Config {
+    pub fn from_file(path: &str) -> io::Result<Self> {
+        let mut file = try!(File::open(path));
+        let mut buffer = String::new();
+        try!(file.read_to_string(&mut buffer));
+        serde_yaml::from_str(&buffer)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))
     }
 }
 

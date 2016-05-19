@@ -1,10 +1,12 @@
 #![feature(plugin, custom_derive)]
 #![plugin(clippy)]
 #![plugin(serde_macros)]
+#![plugin(docopt_macros)]
 
 #![feature(downgraded_weak)]
 
 #![recursion_limit="128"]
+
 
 extern crate env_logger;
 extern crate mio;
@@ -20,6 +22,8 @@ extern crate itertools;
 extern crate serde;
 extern crate serde_yaml;
 extern crate treebitmap;
+extern crate rustc_serialize;
+extern crate docopt;
 
 mod utils;
 mod transport;
@@ -38,6 +42,14 @@ use resolver::RcResolver;
 use serve::{serve_tcp, serve_udp};
 use config::Config;
 
+docopt!(Args, "
+Usage: euphonium [options]
+       euphonium (--help|--version)
+
+Options:
+    -c CONFIG, --config CONFIG      Specify configuration file [default: euphonium.yaml]
+");
+
 fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
     where F: FnOnce() -> T,
           F: Send + 'static,
@@ -49,9 +61,15 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
 }
 fn main() {
     env_logger::init().expect("What the ...?");
+    let args: Args = Args::docopt().decode().unwrap_or_else(|e| e.exit());
+    let config = Config::from_file(&args.flag_config)
+    .unwrap_or_else(|e| {
+        debug!("Error: {:?}", e);
+        error!("Failed to load configuration file {}: {}", args.flag_config, e);
+        std::process::exit(1);
+    });
 
     mioco_config_start(move || {
-        let config = Config::default();
         let ip = config.serve.ip;
         let port = config.serve.port;
         let addr = SocketAddr::new(ip, port);

@@ -15,6 +15,7 @@ quick_error! {
             from()
             from(kind: io::ErrorKind) -> (io::Error::new(kind, "Io"))
             description(err.description())
+            display("{}", err)
         }
         InvalidEntry {
             description("The entry is not in correct format")

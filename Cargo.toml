@@ -1,28 +1,36 @@
 [package]
-name = "euphonium"
-version = "0.1.0"
 authors = ["SAPikachu <sapikachu@gmail.com>"]
 description = "Recursive DNS resolver"
+homepage = "https://github.com/SAPikachu/euphonium"
 keywords = ["dns", "recursive", "mioco"]
 license = "MPL-2.0"
-homepage = "https://github.com/SAPikachu/euphonium"
-repository = "https://github.com/SAPikachu/euphonium"
+name = "euphonium"
 readme = "README.md"
+repository = "https://github.com/SAPikachu/euphonium"
+version = "0.1.0"
 
 [dependencies]
+byteorder = "0.5.*"
 clippy = "*"
-mioco = { git = "https://github.com/dpc/mioco.git" }
-mio = "*"
+custom_derive = "0.1.*"
+docopt = "0.6.80"
+docopt_macros = "0.6.84"
 env_logger = "*"
-trust-dns = "0.5.*"
+itertools = "*"
+log = "*"
+mio = "*"
+newtype_derive = "0.1.*"
 quick-error = "1.0.*"
 rand = "0.3.*"
-log = "*"
-byteorder = "0.5.*"
-itertools = "*"
-newtype_derive = "0.1.*"
-custom_derive = "0.1.*"
-serde = { version = "^0.7", features = ["nightly"] }
+rustc-serialize = "0.3.19"
 serde_macros = "^0.7"
 serde_yaml = "^0.2"
 treebitmap = "^0.2"
+trust-dns = "0.5.*"
+
+[dependencies.mioco]
+git = "https://github.com/dpc/mioco.git"
+
+[dependencies.serde]
+features = ["nightly"]
+version = "^0.7"
