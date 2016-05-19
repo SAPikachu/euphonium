@@ -48,6 +48,9 @@ Usage: euphonium [options]
 Options:
     -c CONFIG, --config CONFIG      Specify configuration file [default: euphonium.yaml]
 ");
+const VERSION_FULL: &'static str = concat!(
+    env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"),
+);
 
 fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
     where F: FnOnce() -> T,
@@ -60,7 +63,8 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
 }
 fn main() {
     env_logger::init().expect("What the ...?");
-    let args: Args = Args::docopt().decode().unwrap_or_else(|e| e.exit());
+    let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).decode()
+    .unwrap_or_else(|e| e.exit());
     let config = Config::from_file(&args.flag_config)
     .unwrap_or_else(|e| {
         debug!("Error: {:?}", e);
