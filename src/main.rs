@@ -1,7 +1,7 @@
 #![feature(plugin, custom_derive)]
 #![feature(downgraded_weak)]
 
-#![plugin(clippy)]
+#![cfg_attr(feature = "clippy", plugin(clippy))]
 #![plugin(serde_macros)]
 #![plugin(docopt_macros)]
 
