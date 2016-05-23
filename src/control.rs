@@ -13,7 +13,7 @@ use utils::{WithTimeout, JsonRpcRequest};
 
 pub struct ControlServer {
     #[allow(dead_code)]
-    live_token: Sender<()>,
+    live_keeper: Sender<()>,
     notifier: Option<Receiver<()>>,
 }
 
@@ -21,7 +21,7 @@ impl ControlServer {
     pub fn new() -> Self {
         let (send, recv) = channel::<()>();
         ControlServer {
-            live_token: send,
+            live_keeper: send,
             notifier: Some(recv),
         }
     }
