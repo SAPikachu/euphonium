@@ -2,7 +2,6 @@ use std::io::{Result, BufReader, BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::fs::{metadata, set_permissions, remove_file};
 use std::sync::mpsc::TryRecvError;
-use std::cell::RefCell;
 
 use mioco;
 use mioco::sync::mpsc::{channel, Sender, Receiver};
@@ -15,7 +14,7 @@ use utils::{WithTimeout, JsonRpcRequest};
 pub struct ControlServer {
     #[allow(dead_code)]
     live_token: Sender<()>,
-    notifier: RefCell<Option<Receiver<()>>>,
+    notifier: Option<Receiver<()>>,
 }
 
 impl ControlServer {
@@ -23,12 +22,11 @@ impl ControlServer {
         let (send, recv) = channel::<()>();
         ControlServer {
             live_token: send,
-            notifier: RefCell::new(Some(recv)),
+            notifier: Some(recv),
         }
     }
-    pub fn run(&self, resolver: &RcResolver) -> Result<()> {
-        let notifier = self.notifier.borrow_mut().take()
-        .expect("run() can only be called once");
+    pub fn run(&mut self, resolver: &RcResolver) -> Result<()> {
+        let notifier = self.notifier.take().expect("run() can only be called once");
         ControlServer::serve(resolver, notifier)
     }
     fn serve(resolver: &RcResolver, live_notifier: Receiver<()>) -> Result<()> {
