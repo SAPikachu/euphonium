@@ -23,7 +23,7 @@ Usage: euctl [-s SOCK] <command>
        euctl (--help|--version)
 
 Options:
-    -s SOCK, --sock SOCK      Specify custom location of control socket
+    -s SOCK, --sock SOCK      Specify where the control socket is located at. If not specified, default location will be used.
 ");
 const VERSION_FULL: &'static str = concat!(
     "euctl ", env!("CARGO_PKG_VERSION"),
