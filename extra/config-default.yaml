@@ -28,6 +28,10 @@ forwarders:
 query:
     timeout: 5 # Seconds
 
+control:
+    sock_path: /tmp/euphonium.sock
+    sock_permission: "0600"
+
 root_servers:
     - "198.41.0.4"
     - "192.228.79.201"

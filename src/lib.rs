@@ -2,6 +2,7 @@
 #![feature(downgraded_weak)]
 
 #![cfg_attr(feature = "clippy", plugin(clippy))]
+#![cfg_attr(not(feature = "clippy"), allow(unknown_lints))]
 #![plugin(serde_macros)]
 #![plugin(docopt_macros)]
 
@@ -20,20 +21,22 @@ extern crate itertools;
 #[macro_use] extern crate newtype_derive;
 extern crate serde;
 extern crate serde_yaml;
+extern crate serde_json;
 extern crate treebitmap;
 extern crate rustc_serialize;
 extern crate docopt;
 
-mod utils;
+pub mod utils;
 mod transport;
 mod cache;
 mod nscache;
 mod query;
 mod serve;
 mod resolver;
-mod config;
+pub mod config;
 mod recursive;
 mod forwarding;
+mod control;
 
 use std::net::{SocketAddr};
 
@@ -61,7 +64,7 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
     config.set_catch_panics(false);
     mioco::Mioco::new_configured(config).start(f)
 }
-fn main() {
+pub fn main() {
     env_logger::init().expect("What the ...?");
     let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).decode()
     .unwrap_or_else(|e| e.exit());

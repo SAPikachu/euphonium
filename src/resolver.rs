@@ -2,6 +2,7 @@ use std::sync::{Arc, Weak};
 use std::default::Default;
 
 use mioco;
+use mioco::sync::Mutex;
 use mioco::sync::mpsc::{channel, Receiver};
 use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{Name};
@@ -14,6 +15,7 @@ use config::Config;
 use recursive::RecursiveResolver;
 use forwarding::ForwardingResolver;
 use query::query_multiple_handle_futures;
+use control::ControlServer;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
@@ -31,6 +33,7 @@ pub struct Resolver {
     pub ns_cache: NsCache,
     pub config: Config,
     forwarders: Vec<Arc<ForwardingResolver>>,
+    control_server: Mutex<ControlServer>,
 }
 custom_derive! {
     #[derive(Clone, NewtypeFrom, NewtypeDeref)]
@@ -50,7 +53,10 @@ impl RcResolver {
             ns_cache: NsCache::default(),
             config: config,
             forwarders: forwarders,
+            control_server: Mutex::new(ControlServer::new()),
         }).into();
+        ret.control_server.lock().unwrap().run(&ret)
+        .expect("Failed to initialize control socket");
         ret.init_root_servers();
         ret.attach();
         ret.handle_cache_expiration_channel(recv);

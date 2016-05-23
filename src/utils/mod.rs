@@ -17,10 +17,12 @@ pub mod future;
 pub mod with_timeout;
 pub mod as_disp;
 pub mod ipset;
+pub mod jsonrpc;
 pub use self::with_timeout::WithTimeout;
 pub use self::future::Future;
 pub use self::as_disp::AsDisplay;
 pub use self::ipset::IpSet;
+pub use self::jsonrpc::{JsonRpcRequest, JsonRpcResponse};
 
 quick_error! {
     #[derive(Debug)]

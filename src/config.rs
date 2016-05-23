@@ -51,6 +51,19 @@ impl FromStorage<String> for Arc<IpSet> {
         )))
     }
 }
+custom_derive! {
+    #[derive(Clone, Copy, Debug, NewtypeDisplay, NewtypeFrom, NewtypeDeref)]
+    pub struct PermissionBits(u32);
+}
+impl FromStorage<String> for PermissionBits {
+    fn from_storage<TDes: ?Sized + Deserializer>(storage: String) -> Result<Self, TDes::Error> {
+        u32::from_str_radix(&storage, 8)
+        .map(Into::into)
+        .map_err(|_| TDes::Error::invalid_value(&format!(
+            "Invalid permission bits: {}", storage,
+        )))
+    }
+}
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -78,12 +91,19 @@ pub struct QueryConfig {
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+pub struct ControlConfig {
+    pub sock_path: String,
+    pub sock_permission: ProxiedValue<String, PermissionBits>,
+}
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serve: ServeConfig,
     pub root_servers: Vec<IpAddr>,
     pub cache: CacheConfig,
     pub forwarders: Vec<ForwarderConfig>,
     pub query: QueryConfig,
+    pub control: ControlConfig,
 }
 
 const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml");
