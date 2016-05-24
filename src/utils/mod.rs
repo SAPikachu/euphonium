@@ -31,6 +31,7 @@ quick_error! {
             from()
             from(kind: io::ErrorKind) -> (io::Error::new(kind, "Io"))
             description(err.description())
+            display("{}", err)
         }
         Decode(err: DecodeError) {
             from()

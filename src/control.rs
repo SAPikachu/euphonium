@@ -1,7 +1,9 @@
+use std;
 use std::io::{Result, BufReader, BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::fs::{metadata, set_permissions, remove_file};
 use std::sync::mpsc::TryRecvError;
+use std::fmt::{Debug, Display};
 
 use mioco;
 use mioco::sync::mpsc::{channel, Sender, Receiver};
@@ -11,12 +13,36 @@ use serde_json;
 use resolver::{RcResolver};
 use utils::{WithTimeout, JsonRpcRequest};
 
+pub trait FormattableError: std::error::Error + Display + Debug {}
+impl<T> FormattableError for T where T: std::error::Error + Display + Debug {}
+quick_error! {
+    #[derive(Debug)]
+    pub enum Error {
+        UnknownCommand {
+            description("Unknown command")
+        }
+        Wrapped(inner: Box<FormattableError>) {
+            description(inner.description())
+            from()
+            display("{}", inner)
+        }
+        Custom(msg: String) {
+            description("Custom error")
+            display("{}", msg)
+        }
+    }
+}
+pub type ControlResult = std::result::Result<String, Error>;
 pub struct ControlServer {
     #[allow(dead_code)]
     live_keeper: Sender<()>,
     notifier: Option<Receiver<()>>,
 }
-
+impl Default for ControlServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl ControlServer {
     pub fn new() -> Self {
         let (send, recv) = channel::<()>();
@@ -86,9 +112,11 @@ impl ControlServer {
                     },
                 };
                 info!("Command: {}", req.method);
-                let resp = match req.method.as_str() {
-                    "ping" => req.result("Pong".into()),
-                    _ => req.error("Unknown command".into()),
+                let resp = match resolver.handle_control_command(
+                    &req.method, &req.params,
+                ) {
+                    Ok(x) => req.result(x),
+                    Err(e) => req.error(e.to_string()),
                 };
                 let mut resp_str = serde_json::to_string(&resp).unwrap();
                 resp_str.push_str("\n");

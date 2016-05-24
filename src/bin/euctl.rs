@@ -42,7 +42,7 @@ fn main() {
         let stream = UnixSocket::stream().unwrap();
         let (mut socket, _) = stream.connect(&sock_path).unwrap();
         serde_json::to_writer(&mut socket, &req).unwrap();
-        socket.write_all("\n".as_bytes()).unwrap();
+        socket.write_all(b"\n").unwrap();
         socket.flush().unwrap();
         let resp: JsonRpcResponse = serde_json::from_reader(&mut socket).unwrap();
         if let Some(msg) = resp.result {

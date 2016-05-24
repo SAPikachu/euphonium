@@ -15,7 +15,7 @@ use config::Config;
 use recursive::RecursiveResolver;
 use forwarding::ForwardingResolver;
 use query::query_multiple_handle_futures;
-use control::ControlServer;
+use control::{ControlServer, Error as ControlError, ControlResult};
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
@@ -98,6 +98,12 @@ impl RcResolver {
         entry.pin();
         for ip in &self.config.root_servers {
             entry.add_ns(*ip, Name::root(), None);
+        }
+    }
+    pub fn handle_control_command(&self, cmd: &str, _: &[String]) -> ControlResult {
+        match cmd {
+            "ping" => Ok("Pong".into()),
+            _ => Err(ControlError::UnknownCommand),
         }
     }
     fn handle_cache_expiration_channel(&self, ch: Receiver<Query>) {
