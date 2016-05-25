@@ -119,7 +119,7 @@ impl RcResolver {
                         Err(_) => false,
                     };
                     if !updated {
-                        res.cache.operate(q.get_name(), |entry, _| {
+                        res.cache.operate(q.get_name(), |entry| {
                             let still_expired = entry.lookup_entry(q.get_query_type())
                             .map_or(false, |x| x.is_expired());
                             if still_expired {

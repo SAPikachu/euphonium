@@ -14,9 +14,9 @@ use resolver::{RcResolver, RcResolverWeak};
 
 pub type Key = Name;
 
-#[allow(dead_code)] // FIXME
 #[derive(Debug, Copy, Clone)]
 pub enum TtlMode {
+    #[allow(dead_code)]
     Original,
     Fixed(u32),
     Relative(SystemTime),
@@ -85,9 +85,9 @@ impl RecordTypeEntry {
         };
     }
 }
-#[derive(Default)]
 pub struct Entry {
     records: HashMap<RecordType, RecordTypeEntry>,
+    expiration_notifier: Option<Sender<Query>>,
 }
 impl Entry {
     pub fn lookup_entry(&self, t: RecordType) -> Option<&RecordTypeEntry> {
@@ -108,7 +108,7 @@ impl Entry {
             ret
         })
     }
-    pub fn update(&mut self, msg: &Message, expiration_notifier: Option<Sender<Query>>, source: RecordSource) {
+    pub fn update(&mut self, msg: &Message, source: RecordSource) {
         // TODO: Validate message before updating
         // TODO: Confirm that the new message is more preferable than existing one
         assert!(msg.get_queries().len() == 1);
@@ -142,7 +142,7 @@ impl Entry {
             message: cache_msg,
             expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
             ttl: TtlMode::Relative(SystemTime::now()),
-            expiration_notifier: expiration_notifier,
+            expiration_notifier: self.expiration_notifier.clone(),
             expiration_notified: AtomicBool::new(false),
             resolver: resolver.to_weak(),
             source: source,
@@ -161,7 +161,11 @@ impl CachePlain {
         self.entries.get(key)
     }
     pub fn lookup_or_insert(&mut self, key: &Key) -> &mut Entry {
-        self.entries.entry(key.clone()).or_insert_with(Entry::default)
+        let notifier = self.expiration_notifier.clone();
+        self.entries.entry(key.clone()).or_insert_with(move || Entry {
+            records: HashMap::default(),
+            expiration_notifier: notifier,
+        })
     }
 }
 pub struct Cache {
@@ -184,11 +188,10 @@ impl Cache {
         guard.lookup(key).and_then(|entry| entry.lookup_adjusted(t)).map(op)
     }
     pub fn operate<F, R>(&self, key: &Key, op: F) -> R
-        where F: FnOnce(&mut Entry, Option<Sender<Query>>) -> R,
+        where F: FnOnce(&mut Entry) -> R,
     {
         let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
-        let notifier = guard.expiration_notifier.clone();
-        op(guard.lookup_or_insert(key), notifier)
+        op(guard.lookup_or_insert(key))
     }
     pub fn update_from_message(&self, msg: &Message, source: RecordSource) {
         if cfg!(debug_assertions) {
@@ -203,7 +206,7 @@ impl Cache {
             }
         }
         let name = msg.get_queries()[0].get_name();
-        self.operate(name, |entry, notifier| entry.update(msg, notifier, source));
+        self.operate(name, |entry| entry.update(msg, source));
     }
 }
 impl Default for Cache {
