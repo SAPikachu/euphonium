@@ -10,7 +10,7 @@ use cache::RecordSource;
 use config::Config;
 use resolver::{RcResolver, ErrorKind};
 use query::query;
-use utils::IpSet;
+use utils::{IpSet, MessageExt};
 
 pub struct ForwardingResolver {
     server: IpAddr,
@@ -38,6 +38,13 @@ impl ForwardingResolver {
             }
         }
         parent.cache.update_from_message(&msg, RecordSource::Forwarder);
-        Ok(msg)
+        // Set TTL to 1 second so that clients can come back and fetch better result
+        let mut ret = Message::new();
+        ret.copy_resp_with(&msg, |rec| {
+            let mut new_rec = rec.clone();
+            new_rec.ttl(1);
+            new_rec
+        });
+        Ok(ret)
     }
 }

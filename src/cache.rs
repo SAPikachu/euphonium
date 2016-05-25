@@ -16,7 +16,6 @@ pub type Key = Name;
 
 #[derive(Debug, Copy, Clone)]
 pub enum TtlMode {
-    #[allow(dead_code)]
     Original,
     Fixed(u32),
     Relative(SystemTime),
@@ -108,6 +107,13 @@ impl Entry {
             ret
         })
     }
+    fn get_ttl_mode(&self, source: RecordSource) -> TtlMode {
+        match source {
+            RecordSource::Pinned => TtlMode::Original,
+            RecordSource::Forwarder => TtlMode::Fixed(1),
+            RecordSource::Recursive => TtlMode::Relative(SystemTime::now()),
+        }
+    }
     pub fn update(&mut self, msg: &Message, source: RecordSource) {
         // TODO: Validate message before updating
         // TODO: Confirm that the new message is more preferable than existing one
@@ -138,10 +144,11 @@ impl Entry {
                msg.get_queries()[0].as_disp(), msg.as_disp(), cache_ttl);
         let mut cache_msg = msg.clone_resp();
         cache_msg.add_query(msg.get_queries()[0].clone());
+        let ttl_mode = self.get_ttl_mode(source);
         self.records.insert(t, RecordTypeEntry {
             message: cache_msg,
             expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
-            ttl: TtlMode::Relative(SystemTime::now()),
+            ttl: ttl_mode,
             expiration_notifier: self.expiration_notifier.clone(),
             expiration_notified: AtomicBool::new(false),
             resolver: resolver.to_weak(),
