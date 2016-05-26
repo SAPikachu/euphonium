@@ -103,6 +103,14 @@ impl RcResolver {
     pub fn handle_control_command(&self, cmd: &str, _: &[String]) -> ControlResult {
         match cmd {
             "ping" => Ok("Pong".into()),
+            "expire-cache" => {
+                self.cache.expire_all();
+                Ok("All cache entries have been marked as expired".into())
+            },
+            "clear-cache" => {
+                self.cache.clear();
+                Ok("Cleared cache".into())
+            },
             _ => Err(ControlError::UnknownCommand),
         }
     }

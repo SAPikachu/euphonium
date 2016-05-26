@@ -1,7 +1,7 @@
 use std::time::{SystemTime, Duration};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::cmp::{min, max};
 
 use mioco::sync::{Mutex};
@@ -34,6 +34,8 @@ pub struct RecordTypeEntry {
     expiration_notified: AtomicBool,
     resolver: RcResolverWeak,
     source: RecordSource,
+    global_expiration_counter: Arc<AtomicUsize>,
+    record_expiration_counter: usize,
 }
 impl RecordTypeEntry {
     pub fn maybe_notify_expiration(&self) {
@@ -59,7 +61,15 @@ impl RecordTypeEntry {
     pub fn is_expired(&self) -> bool {
         match self.expiration {
             None => false,
-            Some(ref t) => t <= &SystemTime::now(),
+            Some(ref t) => {
+                if self.record_expiration_counter !=
+                    self.global_expiration_counter.load(Ordering::Relaxed)
+                {
+                    true
+                } else {
+                    t <= &SystemTime::now()
+                }
+            },
         }
     }
     pub fn adjust_ttl(&self, rec: &mut Record) {
@@ -77,6 +87,9 @@ impl RecordTypeEntry {
                         if let Some(res) = self.resolver.upgrade() {
                             new_ttl = max(new_ttl, res.config.cache.min_response_ttl);
                         }
+                        if self.is_expired() {
+                            new_ttl = 1
+                        }
                         rec.ttl(new_ttl);
                     },
                 };
@@ -87,6 +100,7 @@ impl RecordTypeEntry {
 pub struct Entry {
     records: HashMap<RecordType, RecordTypeEntry>,
     expiration_notifier: Option<Sender<Query>>,
+    global_expiration_counter: Arc<AtomicUsize>,
 }
 impl Entry {
     pub fn lookup_entry(&self, t: RecordType) -> Option<&RecordTypeEntry> {
@@ -153,13 +167,17 @@ impl Entry {
             expiration_notified: AtomicBool::new(false),
             resolver: resolver.to_weak(),
             source: source,
+            global_expiration_counter: self.global_expiration_counter.clone(),
+            record_expiration_counter: self.global_expiration_counter.load(Ordering::Relaxed),
         });
     }
 }
+
 #[derive(Default)]
 pub struct CachePlain {
     entries: HashMap<Key, Entry>,
     expiration_notifier: Option<Sender<Query>>,
+    global_expiration_counter: Arc<AtomicUsize>,
 }
 pub type CacheInst = Mutex<CachePlain>; 
 
@@ -167,24 +185,41 @@ impl CachePlain {
     pub fn lookup(&self, key: &Key) -> Option<&Entry> {
         self.entries.get(key)
     }
-    pub fn lookup_or_insert(&mut self, key: &Key) -> &mut Entry {
+    fn lookup_mut_internal(&mut self, key: &Key) -> &mut Entry {
+        self.entries.get_mut(key).unwrap()
+    }
+    fn create_entry(&mut self, key: &Key) -> &mut Entry {
         let notifier = self.expiration_notifier.clone();
+        let global_expiration_counter = self.global_expiration_counter.clone();
         self.entries.entry(key.clone()).or_insert_with(move || Entry {
             records: HashMap::default(),
             expiration_notifier: notifier,
+            global_expiration_counter: global_expiration_counter,
         })
+    }
+    pub fn lookup_or_insert(&mut self, key: &Key) -> &mut Entry {
+        // We can't inline these functions due to errors from borrow checker
+        if self.entries.contains_key(key) {
+            self.lookup_mut_internal(key)
+        } else {
+            self.create_entry(key)
+        }
     }
 }
 pub struct Cache {
     inst: CacheInst,
+    global_expiration_counter: Arc<AtomicUsize>,
 }
 pub type RcCache = Arc<Cache>;
 impl Cache {
     pub fn with_expiration_notifier(notifier: Sender<Query>) -> Self {
+        let counter = Arc::new(AtomicUsize::default());
         Cache {
+            global_expiration_counter: counter.clone(),
             inst: Mutex::new(CachePlain {
                 entries: HashMap::new(),
                 expiration_notifier: Some(notifier),
+                global_expiration_counter: counter.clone(),
             }),
         }
     }
@@ -215,13 +250,23 @@ impl Cache {
         let name = msg.get_queries()[0].get_name();
         self.operate(name, |entry| entry.update(msg, source));
     }
+    pub fn expire_all(&self) {
+        self.global_expiration_counter.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn clear(&self) {
+        let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
+        guard.entries.clear();
+    }
 }
 impl Default for Cache {
     fn default() -> Self {
+        let counter = Arc::new(AtomicUsize::default());
         Cache {
+            global_expiration_counter: counter.clone(),
             inst: Mutex::new(CachePlain {
                 entries: HashMap::new(),
                 expiration_notifier: None,
+                global_expiration_counter: counter.clone(),
             }),
         }
     }
