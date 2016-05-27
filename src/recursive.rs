@@ -100,13 +100,14 @@ impl RecursiveResolver {
               TExtra: IntoIterator<Item=Future<Result<Message>>>,
     {
         let mut ns_iter = ns.into_iter().peekable();
-        if ns_iter.peek().is_none() {
+        let mut extra_iter = extra_futures.into_iter().peekable();
+        if ns_iter.peek().is_none() && extra_iter.peek().is_none() {
             return Err(ErrorKind::NoNameserver.into());
         }
         let mut futures: Vec<_> = ns_iter
         .filter_map(|x| self.query_ns_future(&x))
         .collect();
-        futures.extend(extra_futures);
+        futures.extend(extra_iter);
         if futures.is_empty() {
             return Err(ErrorKind::LostRace.into());
         }
