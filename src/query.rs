@@ -36,7 +36,7 @@ fn query_core<T: DnsMsgTransport>(q: Query, mut transport: T, enable_edns: bool)
         let resp = try!(transport.recv_msg());
         if ! resp.is_resp_for(&msg) {
             warn!("Q[{}][{}] Invalid response for {}: {:?}",
-                  msg.as_disp(), transport, msg.get_id(), resp);
+                  transport, msg.get_id(), msg.as_disp(), resp);
             continue;
         }
         if resp.get_response_code() == ResponseCode::FormErr && enable_edns {
