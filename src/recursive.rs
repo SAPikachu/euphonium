@@ -9,7 +9,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, CloneExt, MessageExt, Future};
+use utils::{Result, CloneExt, MessageExt, Future, AsDisplay};
 use query::{query_multiple_handle_futures, query as query_one};
 use cache::{Cache, RecordSource};
 use nscache::NsCache;
@@ -64,7 +64,6 @@ impl RecursiveResolver {
         &self.state.parent.config
     }
     fn query(&self) -> Result<Message> {
-        // TODO: Handle expiration
         let ns = self.get_ns_cache().lookup_recursive(self.state.query.get_name());
         self.query_ns_multiple(ns, None)
     }
@@ -143,7 +142,11 @@ impl RecursiveResolver {
         if !result.get_answers().is_empty() {
             return self.handle_normal_resp(result);
         }
-        self.handle_ns_referral(&result)
+        if result.get_name_servers().iter().any(|x| x.get_rr_type() == RecordType::SOA) {
+            // Domain exists, but no record
+            return Ok(result)
+        }
+        self.handle_ns_referral(result)
     }
     #[allow(similar_names)]
     fn find_unresolved_cnames(&self, msg: &Message) -> Option<Vec<Record>> {
@@ -184,8 +187,6 @@ impl RecursiveResolver {
     }
     #[allow(similar_names)]
     fn handle_normal_resp(&self, msg: Message) -> Result<Message> {
-        // TODO: Update main cache if this response is more preferable
-        // TODO: Anything else to do?
         if self.state.query.get_query_type() == RecordType::CNAME {
             // No need to resolve CNAME chain(?)
             return Ok(msg);
@@ -204,7 +205,8 @@ impl RecursiveResolver {
             next_query.name(next_name);
             match self.resolve_next(&next_query) {
                 Err(e) => {
-                    warn!("Failed to resolve CNAME {}: {:?}", next_query.get_name(), e);
+                    warn!("Failed to resolve CNAME {} for {}: {:?}",
+                          next_query.get_name(), self.state.query.as_disp(), e);
                     return Ok(msg);
                 },
                 Ok(ref next_msg) if
@@ -233,7 +235,7 @@ impl RecursiveResolver {
         }
         Ok(msg)
     }
-    fn handle_ns_referral(&self, msg: &Message) -> Result<Message> {
+    fn handle_ns_referral(&self, msg: Message) -> Result<Message> {
         let mut ns_domains : HashMap<_, _> = msg.get_name_servers().iter()
         .filter_map(|x| match *x.get_rdata() {
             RData::NS {ref nsdname} => Some((nsdname.clone(), x.get_name().clone())),
@@ -241,8 +243,9 @@ impl RecursiveResolver {
         })
         .collect();
         if ns_domains.is_empty() {
-            warn!("Nameserver returned NOERROR and empty answer");
-            return Err(ErrorKind::EmptyAnswer.into());
+            debug!("Nameserver returned NOERROR and empty answer: {}, {}",
+                   msg.get_queries()[0].as_disp(), msg.as_disp());
+            return Ok(msg);
         }
         if ns_domains.values().dedup().count() > 1 {
             // FIXME: Is this legal?
