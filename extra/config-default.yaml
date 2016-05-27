@@ -23,7 +23,7 @@ forwarders:
         - "119.29.29.29"
         - "202.96.128.166"
         - "202.96.134.133"
-      accepted_ip_list: "chn_networks.txt"
+      # accepted_ip_list: "chn_networks.txt"
 
 query:
     timeout: 5 # Seconds
