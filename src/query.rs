@@ -30,12 +30,12 @@ fn query_core<T: DnsMsgTransport>(q: Query, mut transport: T, enable_edns: bool)
         msg.set_edns(edns);
     }
     msg.add_query(q);
-    debug!("Q[{}] {}", transport, msg.as_disp());
+    debug!("[{}] {}", transport, msg.as_disp());
     try!(transport.send_msg(&msg));
     loop {
         let resp = try!(transport.recv_msg());
         if ! resp.is_resp_for(&msg) {
-            warn!("Q[{}][{}] Invalid response for {}: {:?}",
+            warn!("[{}][{}] Invalid response for {}: {:?}",
                   transport, msg.get_id(), msg.as_disp(), resp);
             continue;
         }
@@ -43,7 +43,7 @@ fn query_core<T: DnsMsgTransport>(q: Query, mut transport: T, enable_edns: bool)
             // Maybe the server doesn't implement EDNS?
             return query_core(msg.get_queries()[0].clone(), transport, false);
         }
-        debug!("A[{}] {}", transport, resp.as_disp());
+        debug!("[{}] {} -> {}", transport, resp.get_queries()[0].as_disp(), resp.as_disp());
         return Ok(resp);
     }
 }

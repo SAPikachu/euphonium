@@ -64,7 +64,8 @@ impl<T: Send + 'static> Future<T> {
                     fut.receiver.select_add(mioco::RW::read());
                 }
             }
-            mioco::select_wait();
+            let ret = mioco::select_wait();
+            trace!("select_wait: {:?}", ret);
             for (i, fut) in futures.iter_mut().enumerate() {
                 if fut.try_wait() {
                     return i;
