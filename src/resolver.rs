@@ -27,6 +27,7 @@ pub enum ErrorKind {
     /// Another coroutine is already working on the query
     LostRace,
     RejectedIp,
+    AlreadyQueried,
 }
 pub struct Resolver {
     pub cache: Cache,

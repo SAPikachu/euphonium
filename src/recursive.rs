@@ -1,7 +1,6 @@
 use std::sync::{Arc};
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
-use std::default::Default;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use mioco::sync::Mutex;
@@ -17,10 +16,19 @@ use config::Config;
 use resolver::{ErrorKind, RcResolver};
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
+struct QueryHash(Name, RecordType, DNSClass);
+impl<'a> From<&'a Query> for QueryHash {
+    fn from(q: &'a Query) -> Self {
+        QueryHash(q.get_name().clone(), q.get_query_type(), q.get_query_class())
+    }
+}
+
+#[derive(Eq, PartialEq, Hash, Clone, Debug)]
 enum QueriedItem {
     NS(IpAddr),
     CNAME(Name),
     NSDomain(Name),
+    Query(QueryHash),
 }
 struct RecursiveResolverState {
     queried_items: Mutex<HashSet<QueriedItem>>,
@@ -31,22 +39,34 @@ struct RecursiveResolverState {
 }
 impl RecursiveResolverState {
     fn new(q: &Query, parent: RcResolver, skip_cache: bool) -> Self {
+        let mut queried_items = HashSet::<QueriedItem>::new();
+        queried_items.insert(QueriedItem::Query(q.into()));
         RecursiveResolverState {
-            queried_items: Mutex::new(Default::default()),
+            queried_items: Mutex::new(queried_items),
             query: q.clone(),
             parent: parent,
             query_limit: AtomicIsize::new(256),
             skip_cache: skip_cache,
         }
     }
-    fn new_inner(&self, q: &Query) -> Self {
-        RecursiveResolverState {
-            queried_items: Mutex::new(Default::default()),
+    fn new_inner(&self, q: &Query) -> Result<Self> {
+        let mut queried_items = HashSet::<QueriedItem>::new();
+        // Exclude NS, since we are querying a different domain
+        queried_items.extend(
+            self.queried_items.lock().unwrap().iter()
+            .filter(|x| if let QueriedItem::NS(_) = **x { false } else { true })
+            .map(|x| (*x).clone())
+        );
+        if !queried_items.insert(QueriedItem::Query(q.into())) {
+            return Err(ErrorKind::AlreadyQueried.into());
+        }
+        Ok(RecursiveResolverState {
+            queried_items: Mutex::new(queried_items),
             query: q.clone(),
             parent: self.parent.clone(),
             query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
             skip_cache: self.skip_cache,
-        }
+        })
     }
 }
 #[derive(Clone)]
@@ -309,7 +329,7 @@ impl RecursiveResolver {
             }
         }
         let resolver = RecursiveResolver {
-            state: Arc::new(self.state.new_inner(q)),
+            state: Arc::new(try!(self.state.new_inner(q))),
         };
         let ret = try!(resolver.query());
         self.update_cache(&ret);
