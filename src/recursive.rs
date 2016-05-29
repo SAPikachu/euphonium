@@ -65,7 +65,7 @@ impl RecursiveResolverState {
             query: q.clone(),
             parent: self.parent.clone(),
             query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
-            skip_cache: self.skip_cache,
+            skip_cache: false, // Avoid wasting too much resources on deeply-nested requests
         })
     }
 }
