@@ -13,25 +13,22 @@ fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Tim
     T: Evented,
     F: FnMut(&mut T) -> io::Result<Option<TRet>>,
 {
+    trace!("invoke_with_timeout");
     loop {
         unsafe {
             timer.select_add(mioco::RW::read());
             inner.select_add(rw);
         }
-        let ret = mioco::select_wait();
-        if ret.id() == timer.id() {
-            match timer.try_read() {
-                Some(_) => {
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "Timed out"));
-                },
-                None => { continue; /* Spurious wakeup */ }
-            }
-        }
+        mioco::select_wait();
+        if let Some(_) = timer.try_read() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "Timed out"));
+        };
         match try_fn(inner) {
             Ok(Some(x)) => { return Ok(x); },
             Ok(None) => { /* Spurious wakeup */ },
             Err(e) => { return Err(e); },
         };
+        trace!("invoke_with_timeout: Looping");
     }
 }
 

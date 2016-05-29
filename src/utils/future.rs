@@ -56,22 +56,21 @@ impl<T: Send + 'static> Future<T> {
     }
     pub fn wait_any(futures: &mut [Self]) -> usize {
         assert!(!futures.is_empty());
+        debug!("wait_any: Looping with {} futures", futures.len());
         loop {
             use mioco::Evented;
-            unsafe {
-                for fut in futures.iter() {
+            for fut in futures.iter() {
+                unsafe {
                     fut.receiver.select_add(mioco::RW::read());
                 }
             }
-            let ret = mioco::select_wait();
+            mioco::select_wait();
             for (i, fut) in futures.iter_mut().enumerate() {
-                if ret.id() == fut.receiver.id() {
-                    if fut.try_wait() {
-                        return i;
-                    }
-                    break;
+                if fut.try_wait() {
+                    return i;
                 }
             }
+            debug!("wait_any: Continue looping with {} futures", futures.len());
         }
     }
 }

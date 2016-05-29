@@ -66,6 +66,7 @@ impl ControlServer {
         let weak = resolver.to_weak();
         mioco::spawn(move || {
             loop {
+                debug!("Selecting");
                 select!(
                     r:listener => {
                         /* Fall below */
@@ -77,7 +78,7 @@ impl ControlServer {
                                 debug!("Resolver is dropped, closing control channel");
                                 return;
                             },
-                            Err(e) => panic!("Unexpected error: {:?}", e),
+                            Err(TryRecvError::Empty) => { /* Spurious wakeup */ },
                         };
                     },
                 );
