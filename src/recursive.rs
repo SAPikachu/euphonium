@@ -1,7 +1,7 @@
 use std::sync::{Arc};
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering, AtomicBool};
 
 use mioco::sync::Mutex;
 use trust_dns::op::{Message, ResponseCode, Query};
@@ -36,6 +36,7 @@ struct RecursiveResolverState {
     parent: RcResolver,
     query_limit: AtomicIsize,
     skip_cache: bool,
+    is_done: Arc<AtomicBool>,
 }
 impl RecursiveResolverState {
     fn new(q: &Query, parent: RcResolver, skip_cache: bool) -> Self {
@@ -47,6 +48,7 @@ impl RecursiveResolverState {
             parent: parent,
             query_limit: AtomicIsize::new(256),
             skip_cache: skip_cache,
+            is_done: Arc::default(),
         }
     }
     fn new_inner(&self, q: &Query) -> Result<Self> {
@@ -66,6 +68,7 @@ impl RecursiveResolverState {
             parent: self.parent.clone(),
             query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
             skip_cache: false, // Avoid wasting too much resources on deeply-nested requests
+            is_done: self.is_done.clone(),
         })
     }
 }
@@ -122,6 +125,7 @@ impl RecursiveResolver {
         let mut ns_iter = ns.into_iter().peekable();
         let mut extra_iter = extra_futures.into_iter().peekable();
         if ns_iter.peek().is_none() && extra_iter.peek().is_none() {
+            debug!("{}: No name server", self.state.query.as_disp());
             return Err(ErrorKind::NoNameserver.into());
         }
         let mut futures: Vec<_> = ns_iter
@@ -155,8 +159,16 @@ impl RecursiveResolver {
         let ns_clone = *ns;
         Some(Future::from_fn(move || inst.query_ns(ns_clone)))
     }
+    fn maybe_stop(&self) -> Result<()> {
+        if self.state.is_done.load(Ordering::Acquire) {
+            return Err(ErrorKind::LostRace.into());
+        }
+        Ok(())
+    }
     fn query_ns(self, ns: IpAddr) -> Result<Message> {
+        try!(self.maybe_stop());
         let result = try!(query_one(self.state.query.clone(), ns, *self.get_config().query.timeout));
+        try!(self.maybe_stop());
         if result.get_response_code() != ResponseCode::NoError {
             return Ok(result);
         }
@@ -317,6 +329,7 @@ impl RecursiveResolver {
             state: Arc::new(RecursiveResolverState::new(q, parent, skip_cache)),
         };
         let ret = try!(resolver.query());
+        resolver.state.is_done.store(true, Ordering::Release);
         resolver.update_cache(&ret);
         Ok(ret)
     }
