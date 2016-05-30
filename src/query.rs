@@ -78,17 +78,6 @@ pub fn query(q: Query, addr: IpAddr, timeout: Duration) -> Result<Message> {
         Err(e) => Err(e),
     }
 }
-/* FIXME: Commented out to silence warning. This may be useful again in future.
-pub fn query_multiple_build_futures(q: &Query, servers: &[IpAddr]) -> Vec<Future<Result<Message>>> {
-    servers.iter()
-    .cloned()
-    .map(move |server| {
-        let qc = q.clone();
-        Future::from_fn(move || query(qc, server, true))
-    })
-    .collect()
-}
-*/
 pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>) -> Result<Message> {
     if futures.is_empty() {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -120,12 +109,6 @@ pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>)
         }
     }
 }
-/* FIXME: Commented out to silence warning. This may be useful again in future.
-pub fn query_multiple(q: &Query, servers: &[IpAddr]) -> Result<Message> {
-    let mut futures = query_multiple_build_futures(q, servers);
-    query_multiple_handle_futures(&mut futures)
-}
-*/
 
 #[cfg(test)]
 mod tests {
