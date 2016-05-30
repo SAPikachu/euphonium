@@ -35,11 +35,10 @@ struct RecursiveResolverState {
     query: Query,
     parent: RcResolver,
     query_limit: AtomicIsize,
-    skip_cache: bool,
     is_done: Arc<AtomicBool>,
 }
 impl RecursiveResolverState {
-    fn new(q: &Query, parent: RcResolver, skip_cache: bool) -> Self {
+    fn new(q: &Query, parent: RcResolver) -> Self {
         let mut queried_items = HashSet::<QueriedItem>::new();
         queried_items.insert(QueriedItem::Query(q.into()));
         RecursiveResolverState {
@@ -47,7 +46,6 @@ impl RecursiveResolverState {
             query: q.clone(),
             parent: parent,
             query_limit: AtomicIsize::new(256),
-            skip_cache: skip_cache,
             is_done: Arc::default(),
         }
     }
@@ -67,7 +65,6 @@ impl RecursiveResolverState {
             query: q.clone(),
             parent: self.parent.clone(),
             query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
-            skip_cache: false, // Avoid wasting too much resources on deeply-nested requests
             is_done: self.is_done.clone(),
         })
     }
@@ -324,9 +321,9 @@ impl RecursiveResolver {
     fn update_cache(&self, msg: &Message) {
         self.get_cache().update_from_message(msg, RecordSource::Recursive);
     }
-    pub fn resolve(q: &Query, parent: RcResolver, skip_cache: bool) -> Result<Message> {
+    pub fn resolve(q: &Query, parent: RcResolver) -> Result<Message> {
         let resolver = RecursiveResolver {
-            state: Arc::new(RecursiveResolverState::new(q, parent, skip_cache)),
+            state: Arc::new(RecursiveResolverState::new(q, parent)),
         };
         let ret = try!(resolver.query());
         resolver.state.is_done.store(true, Ordering::Release);
@@ -334,12 +331,10 @@ impl RecursiveResolver {
         Ok(ret)
     }
     fn resolve_next(&self, q: &Query) -> Result<Message> {
-        if !self.state.skip_cache {
-            if let Some(msg) = self.get_cache().lookup_with_type(
-                q.get_name(), q.get_query_type(), |m| m.clone_resp_for(q),
-            ) {
-                return Ok(msg);
-            }
+        if let Some(msg) = self.get_cache().lookup_with_type(
+            q.get_name(), q.get_query_type(), |m| m.clone_resp_for(q),
+        ) {
+            return Ok(msg);
         }
         let resolver = RecursiveResolver {
             state: Arc::new(try!(self.state.new_inner(q))),

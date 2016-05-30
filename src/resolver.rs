@@ -120,9 +120,7 @@ impl RcResolver {
         mioco::spawn(move || {
             while let Ok(q) = ch.recv() {
                 if let Some(res) = resolver_weak.upgrade() {
-                    let updated = match RecursiveResolver::resolve(
-                        &q, res.clone().into(), true
-                    ) {
+                    let updated = match RecursiveResolver::resolve(&q, res.clone().into()) {
                         Ok(msg) => [ResponseCode::NoError, ResponseCode::NXDomain]
                                    .contains(&msg.get_response_code()),
                         Err(_) => false,
@@ -146,7 +144,7 @@ impl RcResolver {
         });
     }
     fn resolve_recursive(self, q: Query) -> Result<Message> {
-        RecursiveResolver::resolve(&q, self, false)
+        RecursiveResolver::resolve(&q, self)
     }
     fn resolve_internal(&self, q: &Query) -> Result<Message> {
         let mut futures = self.forwarders.iter().cloned().map(move |forwarder| {
