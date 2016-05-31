@@ -51,10 +51,11 @@ impl RecursiveResolverState {
     }
     fn new_inner(&self, q: &Query) -> Result<Self> {
         let mut queried_items = HashSet::<QueriedItem>::new();
-        // Exclude NS, since we are querying a different domain
+        // Exclude NS and NSDomain, since we are querying a different domain
         queried_items.extend(
             self.queried_items.lock().unwrap().iter()
             .filter(|x| if let QueriedItem::NS(_) = **x { false } else { true })
+            .filter(|x| if let QueriedItem::NSDomain(_) = **x { false } else { true })
             .map(|x| (*x).clone())
         );
         if !queried_items.insert(QueriedItem::Query(q.into())) {
