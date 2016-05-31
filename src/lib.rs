@@ -50,6 +50,7 @@ Usage: euphonium [options]
 
 Options:
     -c CONFIG, --config CONFIG      Specify configuration file [default: euphonium.yaml]
+    -t, --test                      Test configuration and then exit immediately
 ");
 const VERSION_FULL: &'static str = concat!(
     env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"),
@@ -85,7 +86,9 @@ pub fn main() {
         error!("Failed to load configuration file {}: {}", args.flag_config, e);
         std::process::exit(1);
     });
-
+    if args.flag_test {
+        return;
+    }
     mioco_config_start_ex(config.internal.threads, config.internal.mio_notify_capacity,
     move || {
         let ip = config.serve.ip;
