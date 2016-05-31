@@ -55,14 +55,25 @@ const VERSION_FULL: &'static str = concat!(
     env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"),
 );
 
-fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
+fn mioco_config_start_ex<F, T>(threads: usize, notify_capacity: usize, f: F) -> std::thread::Result<T>
     where F: FnOnce() -> T,
           F: Send + 'static,
           T: Send + 'static
 {
     let mut config = mioco::Config::new();
     config.set_catch_panics(false);
+    config.set_thread_num(threads);
+    config.event_loop().notify_capacity(notify_capacity);
     mioco::Mioco::new_configured(config).start(f)
+}
+#[cfg(test)]
+fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
+    where F: FnOnce() -> T,
+          F: Send + 'static,
+          T: Send + 'static
+{
+    let config = Config::default();
+    mioco_config_start_ex(config.internal.threads, config.internal.mio_notify_capacity, f)
 }
 pub fn main() {
     env_logger::init().expect("What the ...?");
@@ -75,7 +86,8 @@ pub fn main() {
         std::process::exit(1);
     });
 
-    mioco_config_start(move || {
+    mioco_config_start_ex(config.internal.threads, config.internal.mio_notify_capacity,
+    move || {
         let ip = config.serve.ip;
         let port = config.serve.port;
         let addr = SocketAddr::new(ip, port);

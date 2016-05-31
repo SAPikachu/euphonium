@@ -97,6 +97,12 @@ pub struct ControlConfig {
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+pub struct InternalConfig {
+    pub threads: usize,
+    pub mio_notify_capacity: usize,
+}
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serve: ServeConfig,
     pub root_servers: Vec<IpAddr>,
@@ -104,6 +110,7 @@ pub struct Config {
     pub forwarders: Vec<ForwarderConfig>,
     pub query: QueryConfig,
     pub control: ControlConfig,
+    pub internal: InternalConfig,
 }
 
 const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml");
