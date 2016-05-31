@@ -56,12 +56,19 @@ impl RcResolver {
             forwarders: forwarders,
             control_server: Mutex::new(ControlServer::new()),
         }).into();
-        ret.control_server.lock().unwrap().run(&ret)
-        .expect("Failed to initialize control socket");
+        if cfg!(not(test)) {
+            ret.control_server.lock().unwrap().run(&ret)
+            .expect("Failed to initialize control socket");
+        }
         ret.init_root_servers();
         ret.attach();
         ret.handle_cache_expiration_channel(recv);
         ret
+    }
+    #[cfg(test)]
+    pub fn run_control_server(&self) {
+        self.control_server.lock().unwrap().run(self)
+        .expect("Failed to initialize control socket");
     }
     pub fn to_weak(&self) -> RcResolverWeak {
         RcResolverWeak(Arc::downgrade(self))
