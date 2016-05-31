@@ -350,6 +350,8 @@ mod tests {
                 expiration_notified: AtomicBool::new(false),
                 resolver: resolver.to_weak(),
                 source: RecordSource::Pinned,
+                record_expiration_counter: 0,
+                global_expiration_counter: Default::default(),
             };
             let mut rec = Record::new();
             macro_rules! adjust {
