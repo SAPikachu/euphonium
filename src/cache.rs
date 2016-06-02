@@ -4,13 +4,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::cmp::{min, max};
 
+use mioco;
 use mioco::sync::{Mutex};
 use mioco::sync::mpsc::{Sender};
 use trust_dns::rr::{Name, RecordType, Record};
 use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
+use parking_lot::Mutex as PlMutex;
 
 use utils::{CloneExt, MessageExt, AsDisplay};
-use resolver::{RcResolver, RcResolverWeak};
+use config::Config;
 
 pub type Key = Name;
 
@@ -26,36 +28,53 @@ pub enum RecordSource {
     Recursive,
     Pinned,
 }
+#[derive(Default)]
+struct CacheSharedData {
+    // Use parking_lot::Mutex here because its overhead without contention is minimal
+    expiration_notifier: Option<PlMutex<Sender<Query>>>,
+    global_expiration_counter: Arc<AtomicUsize>,
+    config: Arc<Config>,
+}
 pub struct RecordTypeEntry {
     message: Message,
     expiration: Option<SystemTime>,
     ttl: TtlMode,
-    expiration_notifier: Option<Sender<Query>>,
     expiration_notified: AtomicBool,
-    resolver: RcResolverWeak,
     source: RecordSource,
-    global_expiration_counter: Arc<AtomicUsize>,
     record_expiration_counter: usize,
+    shared: Arc<CacheSharedData>,
 }
 impl RecordTypeEntry {
     pub fn maybe_notify_expiration(&self) {
-        let sender = match self.expiration_notifier {
+        let sender_locked = match self.shared.expiration_notifier {
             None => return,
             Some(ref s) => s,
         };
         if !self.is_expired() {
             return;
         }
-        if self.expiration_notified.load(Ordering::Relaxed) {
+        if self.expiration_notified.load(Ordering::Acquire) {
             // Already notified
             return;
         }
-        if self.expiration_notified.swap(true, Ordering::Relaxed) {
+        if self.expiration_notified.swap(true, Ordering::AcqRel) {
             // Lost race
             return;
         }
         let q = self.message.get_queries()[0].clone();
         debug!("Entry expired: {}", q.as_disp());
+        let sender = if cfg!(debug_assertions) {
+            sender_locked.try_lock()
+            .expect("This lock should never be contended as it won't leave the outer mutex")
+        } else {
+            let mut sender = sender_locked.try_lock();
+            while sender.is_none() {
+                warn!("Notification lock is contending");
+                mioco::yield_now();
+                sender = sender_locked.try_lock();
+            }
+            sender.unwrap()
+        };
         sender.send(q.into()).is_ok();
     }
     pub fn is_expired(&self) -> bool {
@@ -63,7 +82,7 @@ impl RecordTypeEntry {
             None => false,
             Some(ref t) => {
                 if self.record_expiration_counter !=
-                    self.global_expiration_counter.load(Ordering::Relaxed)
+                    self.shared.global_expiration_counter.load(Ordering::Relaxed)
                 {
                     true
                 } else {
@@ -84,9 +103,7 @@ impl RecordTypeEntry {
                     Ok(dur) => {
                         let diff = min(dur.as_secs(), i32::max_value() as u64) as u32;
                         let mut new_ttl = rec.get_ttl().saturating_sub(diff);
-                        if let Some(res) = self.resolver.upgrade() {
-                            new_ttl = max(new_ttl, res.config.cache.min_response_ttl);
-                        }
+                        new_ttl = max(new_ttl, self.shared.config.cache.min_response_ttl);
                         if self.is_expired() {
                             new_ttl = 1
                         }
@@ -99,10 +116,24 @@ impl RecordTypeEntry {
 }
 pub struct Entry {
     records: HashMap<RecordType, RecordTypeEntry>,
-    expiration_notifier: Option<Sender<Query>>,
-    global_expiration_counter: Arc<AtomicUsize>,
+    shared: Arc<CacheSharedData>,
 }
 impl Entry {
+    pub fn gc(&mut self) {
+        let mut new_map = HashMap::<RecordType, RecordTypeEntry>::new();
+        new_map.extend(self.records.drain().filter(
+            |&(_, ref v)| !v.is_expired() &&
+                          v.message.get_response_code() == ResponseCode::NoError &&
+                          v.message.get_answers().len() > 0
+        ));
+        self.records = new_map;
+    }
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
     pub fn lookup_entry(&self, t: RecordType) -> Option<&RecordTypeEntry> {
         self.records.get(&t)
     }
@@ -148,8 +179,7 @@ impl Entry {
         .chain(msg.get_additional())
         .filter(|x| x.get_rr_type() != RecordType::OPT);
         // TODO: NXDomain should be cached for shorter time
-        let resolver = RcResolver::current();
-        let min_cache_ttl = resolver.config.cache.min_cache_ttl;
+        let min_cache_ttl = self.shared.config.cache.min_cache_ttl;
         let cache_ttl = max(
             min_cache_ttl,
             all_records.map(|x| x.get_ttl()).min().unwrap_or(min_cache_ttl),
@@ -163,12 +193,12 @@ impl Entry {
             message: cache_msg,
             expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
             ttl: ttl_mode,
-            expiration_notifier: self.expiration_notifier.clone(),
             expiration_notified: AtomicBool::new(false),
-            resolver: resolver.to_weak(),
             source: source,
-            global_expiration_counter: self.global_expiration_counter.clone(),
-            record_expiration_counter: self.global_expiration_counter.load(Ordering::Relaxed),
+            record_expiration_counter: self.shared.global_expiration_counter.load(
+                Ordering::Relaxed,
+            ),
+            shared: self.shared.clone(),
         });
     }
 }
@@ -176,8 +206,7 @@ impl Entry {
 #[derive(Default)]
 pub struct CachePlain {
     entries: HashMap<Key, Entry>,
-    expiration_notifier: Option<Sender<Query>>,
-    global_expiration_counter: Arc<AtomicUsize>,
+    shared: Arc<CacheSharedData>,
 }
 pub type CacheInst = Mutex<CachePlain>; 
 
@@ -189,12 +218,10 @@ impl CachePlain {
         self.entries.get_mut(key).unwrap()
     }
     fn create_entry(&mut self, key: &Key) -> &mut Entry {
-        let notifier = self.expiration_notifier.clone();
-        let global_expiration_counter = self.global_expiration_counter.clone();
+        let shared = self.shared.clone();
         self.entries.entry(key.clone()).or_insert_with(move || Entry {
             records: HashMap::default(),
-            expiration_notifier: notifier,
-            global_expiration_counter: global_expiration_counter,
+            shared: shared,
         })
     }
     pub fn lookup_or_insert(&mut self, key: &Key) -> &mut Entry {
@@ -212,14 +239,17 @@ pub struct Cache {
 }
 pub type RcCache = Arc<Cache>;
 impl Cache {
-    pub fn with_expiration_notifier(notifier: Sender<Query>) -> Self {
+    pub fn new(notifier: Sender<Query>, config: Arc<Config>) -> Self {
         let counter = Arc::new(AtomicUsize::default());
         Cache {
             global_expiration_counter: counter.clone(),
             inst: Mutex::new(CachePlain {
                 entries: HashMap::new(),
-                expiration_notifier: Some(notifier),
-                global_expiration_counter: counter.clone(),
+                shared: Arc::new(CacheSharedData {
+                    expiration_notifier: Some(PlMutex::new(notifier)),
+                    global_expiration_counter: counter.clone(),
+                    config: config,
+                }),
             }),
         }
     }
@@ -265,8 +295,11 @@ impl Default for Cache {
             global_expiration_counter: counter.clone(),
             inst: Mutex::new(CachePlain {
                 entries: HashMap::new(),
-                expiration_notifier: None,
-                global_expiration_counter: counter.clone(),
+                shared: Arc::new(CacheSharedData {
+                    expiration_notifier: None,
+                    global_expiration_counter: counter.clone(),
+                    config: Arc::new(Config::default()),
+                }),
             }),
         }
     }
@@ -279,7 +312,6 @@ mod tests {
     use trust_dns::rr::*;
     use trust_dns::op::*;
     use super::*;
-    use resolver::*;
     use utils::*;
     use ::mioco_config_start;
 
@@ -287,9 +319,53 @@ mod tests {
         Name::parse(raw, Some(&Name::root())).unwrap()
     }
     #[test]
+    #[allow(unused_variables)]
+    fn test_entry_gc() {
+        mioco_config_start(move || {
+            let mut entry = Entry {
+                records: Default::default(),
+                shared: Default::default(),
+            };
+            let mut q = Query::new();
+            let name = Name::parse("www.google.com", Some(&Name::root())).unwrap();
+            q.name(name.clone());
+
+            let mut msg1 = Message::new();
+            q.query_type(RecordType::TXT);
+            msg1.message_type(MessageType::Response);
+            msg1.add_query(q.clone());
+            entry.update(&msg1, RecordSource::Recursive);
+
+            let mut msg1 = Message::new();
+            q.query_type(RecordType::AAAA);
+            msg1.message_type(MessageType::Response);
+            msg1.add_query(q.clone());
+            msg1.response_code(ResponseCode::NXDomain);
+            entry.update(&msg1, RecordSource::Recursive);
+
+            let mut msg1 = Message::new();
+            q.query_type(RecordType::A);
+            msg1.message_type(MessageType::Response);
+            msg1.add_query(q.clone());
+            msg1.response_code(ResponseCode::NXDomain);
+            msg1.response_code(ResponseCode::NoError);
+            let mut rec = Record::new();
+            rec.ttl(1);
+            rec.name(name.clone());
+            msg1.add_answer(rec.clone());
+            entry.update(&msg1, RecordSource::Recursive);
+
+            assert_eq!(entry.len(), 3);
+            entry.gc();
+            assert_eq!(entry.len(), 1);
+            entry.shared.global_expiration_counter.fetch_add(1, Ordering::Relaxed);
+            entry.gc();
+            assert_eq!(entry.len(), 0);
+        }).unwrap();
+    }
+    #[test]
     fn test_record_preference() {
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
             let mut msg1 = Message::new();
             msg1.message_type(MessageType::Response);
             msg1.op_code(OpCode::Query);
@@ -307,7 +383,7 @@ mod tests {
             msg2.add_answer(rec.clone());
             msg2.add_answer(rec.clone());
 
-            let cache = &resolver.cache;
+            let cache = Cache::default();
             assert!(cache.lookup_with_type(&name, t, |x| x).is_none());
             cache.update_from_message(&msg1, RecordSource::Forwarder);
             assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 1);
@@ -340,18 +416,16 @@ mod tests {
     #[test]
     fn test_ttl_adjust() {
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
-            let min_ttl = resolver.config.cache.min_response_ttl;
+            let cache = CachePlain::default();
+            let min_ttl = cache.shared.config.cache.min_response_ttl;
             let mut entry = RecordTypeEntry {
                 message: Message::new(),
                 expiration: None,
                 ttl: TtlMode::Original,
-                expiration_notifier: None,
                 expiration_notified: AtomicBool::new(false),
-                resolver: resolver.to_weak(),
                 source: RecordSource::Pinned,
                 record_expiration_counter: 0,
-                global_expiration_counter: Default::default(),
+                shared: cache.shared.clone(),
             };
             let mut rec = Record::new();
             macro_rules! adjust {

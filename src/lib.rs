@@ -25,6 +25,7 @@ extern crate serde_json;
 extern crate treebitmap;
 extern crate rustc_serialize;
 extern crate docopt;
+extern crate parking_lot;
 
 pub mod utils;
 mod transport;

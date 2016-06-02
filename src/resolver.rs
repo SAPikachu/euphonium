@@ -32,7 +32,7 @@ pub enum ErrorKind {
 pub struct Resolver {
     pub cache: Cache,
     pub ns_cache: NsCache,
-    pub config: Config,
+    pub config: Arc<Config>,
     forwarders: Vec<Arc<ForwardingResolver>>,
     control_server: Mutex<ControlServer>,
 }
@@ -49,10 +49,11 @@ impl RcResolver {
     pub fn new(config: Config) -> Self {
         let forwarders = ForwardingResolver::create_all(&config);
         let (send, recv) = channel::<Query>();
+        let config_rc = Arc::new(config);
         let ret: RcResolver = Arc::new(Resolver {
-            cache: Cache::with_expiration_notifier(send),
+            cache: Cache::new(send, config_rc.clone()),
             ns_cache: NsCache::default(),
-            config: config,
+            config: config_rc.clone(),
             forwarders: forwarders,
             control_server: Mutex::new(ControlServer::new()),
         }).into();
