@@ -322,12 +322,11 @@ mod tests {
     #[allow(unused_variables)]
     fn test_entry_gc() {
         mioco_config_start(move || {
-            let mut entry = Entry {
-                records: Default::default(),
-                shared: Default::default(),
-            };
-            let mut q = Query::new();
+            let mut cache = CachePlain::default();
+            let shared = cache.shared.clone();
             let name = Name::parse("www.google.com", Some(&Name::root())).unwrap();
+            let mut entry = cache.lookup_or_insert(&name);
+            let mut q = Query::new();
             q.name(name.clone());
 
             let mut msg1 = Message::new();
@@ -358,7 +357,7 @@ mod tests {
             assert_eq!(entry.len(), 3);
             entry.gc();
             assert_eq!(entry.len(), 1);
-            entry.shared.global_expiration_counter.fetch_add(1, Ordering::Relaxed);
+            shared.global_expiration_counter.fetch_add(2, Ordering::Relaxed);
             entry.gc();
             assert_eq!(entry.len(), 0);
         }).unwrap();
