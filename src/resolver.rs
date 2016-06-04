@@ -134,13 +134,13 @@ impl RcResolver {
                         Err(_) => false,
                     };
                     if !updated {
-                        res.cache.operate(q.get_name(), |entry| {
-                            let still_expired = entry.lookup_entry(q.get_query_type())
+                        res.cache.operate(|cache| {
+                            let still_expired = cache.lookup(&q)
                             .map_or(false, |x| x.is_expired());
                             if still_expired {
                                 debug!("Purging cache entry due to failed update: {}",
                                        q.as_disp());
-                                entry.purge(q.get_query_type());
+                                cache.purge(&q);
                             }
                         });
                     }
@@ -169,13 +169,7 @@ impl RcResolver {
         debug_assert!(msg.get_queries().len() == 1);
         debug_assert!(msg.get_answers().is_empty());
         debug_assert!(msg.get_name_servers().is_empty());
-        let query_type = msg.get_queries()[0].get_query_type();
-        let name = msg.get_queries()[0].get_name().clone();
-        let cache_hit = self.cache.lookup_with_type(
-            &name,
-            query_type,
-            |cached| msg.copy_resp_from(&cached),
-        ).is_some();
+        let cache_hit = self.cache.fill_response(msg);
         if cache_hit {
             return Ok(());
         }

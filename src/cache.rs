@@ -7,14 +7,26 @@ use std::cmp::{min, max};
 use mioco;
 use mioco::sync::{Mutex};
 use mioco::sync::mpsc::{Sender};
-use trust_dns::rr::{Name, RecordType, Record};
+use trust_dns::rr::{Name, RecordType, Record, DNSClass};
 use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
 use parking_lot::Mutex as PlMutex;
 
 use utils::{CloneExt, MessageExt, AsDisplay};
 use config::Config;
 
-pub type Key = Name;
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct Key(Name, RecordType);
+impl<'a> From<&'a Query> for Key {
+    fn from(q: &'a Query) -> Self {
+        assert!(q.get_query_class() == DNSClass::IN);
+        Key(q.get_name().clone(), q.get_query_type())
+    }
+}
+impl From<Query> for Key {
+    fn from(q: Query) -> Self {
+        (&q).into()
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub enum TtlMode {
@@ -91,6 +103,20 @@ impl RecordTypeEntry {
             },
         }
     }
+    pub fn create_response(&self) -> Message {
+        let mut ret = Message::new();
+        self.fill_response(&mut ret);
+        ret.add_query(self.message.get_queries()[0].clone());
+        ret
+    }
+    pub fn fill_response(&self, msg: &mut Message) {
+        self.maybe_notify_expiration();
+        msg.copy_resp_with(&self.message, |rec| {
+            let mut new_rec = rec.clone();
+            self.adjust_ttl(&mut new_rec);
+            new_rec
+        });
+    }
     pub fn adjust_ttl(&self, rec: &mut Record) {
         match self.ttl {
             TtlMode::Original => {},
@@ -114,11 +140,16 @@ impl RecordTypeEntry {
         };
     }
 }
-pub struct Entry {
-    records: HashMap<RecordType, RecordTypeEntry>,
+
+#[derive(Default)]
+pub struct CachePlain {
+    records: HashMap<Key, RecordTypeEntry>,
     shared: Arc<CacheSharedData>,
 }
-impl Entry {
+pub type CacheInst = Mutex<CachePlain>;
+
+impl CachePlain {
+    /*
     pub fn gc(&mut self) {
         let mut new_map = HashMap::<RecordType, RecordTypeEntry>::new();
         new_map.extend(self.records.drain().filter(
@@ -127,30 +158,18 @@ impl Entry {
                           v.message.get_answers().len() > 0
         ));
         self.records = new_map;
-    }
+    }*/
     pub fn len(&self) -> usize {
         self.records.len()
     }
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
-    pub fn lookup_entry(&self, t: RecordType) -> Option<&RecordTypeEntry> {
-        self.records.get(&t)
+    pub fn lookup(&self, key: &Query) -> Option<&RecordTypeEntry> {
+        self.records.get(&key.into())
     }
-    pub fn purge(&mut self, t: RecordType) -> Option<Message> {
-        self.records.remove(&t).map(|entry| entry.message)
-    }
-    pub fn lookup_adjusted(&self, t: RecordType) -> Option<Message> {
-        self.records.get(&t).map(|entry| {
-            entry.maybe_notify_expiration();
-            let mut ret = Message::new();
-            ret.copy_resp_with(&entry.message, |rec| {
-                let mut new_rec = rec.clone();
-                entry.adjust_ttl(&mut new_rec);
-                new_rec
-            });
-            ret
-        })
+    pub fn purge(&mut self, key: &Query) -> Option<Message> {
+        self.records.remove(&key.into()).map(|entry| entry.message)
     }
     fn get_ttl_mode(&self, source: RecordSource) -> TtlMode {
         match source {
@@ -160,15 +179,13 @@ impl Entry {
         }
     }
     pub fn update(&mut self, msg: &Message, source: RecordSource) {
-        // TODO: Validate message before updating
-        // TODO: Confirm that the new message is more preferable than existing one
         assert!(msg.get_queries().len() == 1);
-        let t = msg.get_queries()[0].get_query_type();
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
         if !accepted_responses.contains(&msg.get_response_code()) {
             return;
         }
-        if let Some(existing) = self.records.get(&t) {
+        let key: Key = (&msg.get_queries()[0]).into();
+        if let Some(existing) = self.records.get(&key) {
             if !existing.is_expired() && existing.source >= source {
                 // Existing record is more preferable
                 return;
@@ -189,7 +206,7 @@ impl Entry {
         let mut cache_msg = msg.clone_resp();
         cache_msg.add_query(msg.get_queries()[0].clone());
         let ttl_mode = self.get_ttl_mode(source);
-        self.records.insert(t, RecordTypeEntry {
+        self.records.insert(key, RecordTypeEntry {
             message: cache_msg,
             expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
             ttl: ttl_mode,
@@ -200,37 +217,6 @@ impl Entry {
             ),
             shared: self.shared.clone(),
         });
-    }
-}
-
-#[derive(Default)]
-pub struct CachePlain {
-    entries: HashMap<Key, Entry>,
-    shared: Arc<CacheSharedData>,
-}
-pub type CacheInst = Mutex<CachePlain>; 
-
-impl CachePlain {
-    pub fn lookup(&self, key: &Key) -> Option<&Entry> {
-        self.entries.get(key)
-    }
-    fn lookup_mut_internal(&mut self, key: &Key) -> &mut Entry {
-        self.entries.get_mut(key).unwrap()
-    }
-    fn create_entry(&mut self, key: &Key) -> &mut Entry {
-        let shared = self.shared.clone();
-        self.entries.entry(key.clone()).or_insert_with(move || Entry {
-            records: HashMap::default(),
-            shared: shared,
-        })
-    }
-    pub fn lookup_or_insert(&mut self, key: &Key) -> &mut Entry {
-        // We can't inline these functions due to errors from borrow checker
-        if self.entries.contains_key(key) {
-            self.lookup_mut_internal(key)
-        } else {
-            self.create_entry(key)
-        }
     }
 }
 pub struct Cache {
@@ -244,7 +230,7 @@ impl Cache {
         Cache {
             global_expiration_counter: counter.clone(),
             inst: Mutex::new(CachePlain {
-                entries: HashMap::new(),
+                records: HashMap::new(),
                 shared: Arc::new(CacheSharedData {
                     expiration_notifier: Some(PlMutex::new(notifier)),
                     global_expiration_counter: counter.clone(),
@@ -253,39 +239,39 @@ impl Cache {
             }),
         }
     }
-    pub fn lookup_with_type<F, R>(&self, key: &Key, t: RecordType, op: F) -> Option<R>
-        where F: FnOnce(Message) -> R,
+    pub fn lookup<F, R>(&self, key: &Query, op: F) -> Option<R>
+        where F: FnOnce(&RecordTypeEntry) -> R,
     {
-        let guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
-        guard.lookup(key).and_then(|entry| entry.lookup_adjusted(t)).map(op)
+        self.operate(|x| x.lookup(key.into()).map(op))
     }
-    pub fn operate<F, R>(&self, key: &Key, op: F) -> R
-        where F: FnOnce(&mut Entry) -> R,
+    pub fn fill_response(&self, msg: &mut Message) -> bool {
+        let guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
+        let entry = guard.lookup(&msg.get_queries()[0]);
+        entry.map(|e| e.fill_response(msg)).is_some()
+    }
+    pub fn operate<F, R>(&self, op: F) -> R
+        where F: FnOnce(&mut CachePlain) -> R,
     {
         let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
-        op(guard.lookup_or_insert(key))
+        op(&mut *guard)
     }
     pub fn update_from_message(&self, msg: &Message, source: RecordSource) {
         if cfg!(debug_assertions) {
             assert!(msg.get_op_code() == OpCode::Query);
             assert!(msg.get_message_type() == MessageType::Response);
             assert!(msg.get_queries().len() == 1);
-            if msg.get_answers().is_empty() {
-                assert!(msg.get_response_code() != ResponseCode::NoError);
-            } else {
+            if !msg.get_answers().is_empty() {
                 let name = msg.get_queries()[0].get_name();
                 assert!(msg.get_answers().iter().any(|x| x.get_name() == name));
             }
         }
-        let name = msg.get_queries()[0].get_name();
-        self.operate(name, |entry| entry.update(msg, source));
+        self.operate(|x| x.update(msg, source));
     }
     pub fn expire_all(&self) {
         self.global_expiration_counter.fetch_add(1, Ordering::Relaxed);
     }
     pub fn clear(&self) {
-        let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
-        guard.entries.clear();
+        self.operate(|x| x.records.clear());
     }
 }
 impl Default for Cache {
@@ -294,7 +280,7 @@ impl Default for Cache {
         Cache {
             global_expiration_counter: counter.clone(),
             inst: Mutex::new(CachePlain {
-                entries: HashMap::new(),
+                records: HashMap::new(),
                 shared: Arc::new(CacheSharedData {
                     expiration_notifier: None,
                     global_expiration_counter: counter.clone(),
@@ -318,6 +304,7 @@ mod tests {
     fn name(raw: &str) -> Name {
         Name::parse(raw, Some(&Name::root())).unwrap()
     }
+    /*
     #[test]
     #[allow(unused_variables)]
     fn test_entry_gc() {
@@ -361,7 +348,7 @@ mod tests {
             entry.gc();
             assert_eq!(entry.len(), 0);
         }).unwrap();
-    }
+    }*/
     #[test]
     fn test_record_preference() {
         mioco_config_start(move || {
@@ -383,34 +370,69 @@ mod tests {
             msg2.add_answer(rec.clone());
 
             let cache = Cache::default();
-            assert!(cache.lookup_with_type(&name, t, |x| x).is_none());
+            assert!(cache.lookup(&q, |x| x.create_response()).is_none());
             cache.update_from_message(&msg1, RecordSource::Forwarder);
-            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 1);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 1);
 
             // Should replace cache with better message
             cache.update_from_message(&msg2, RecordSource::Recursive);
-            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 2);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 2);
 
             // Should not replace cache with worse message
             cache.update_from_message(&msg1, RecordSource::Forwarder);
-            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 2);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 2);
 
             // Should not replace cache until expiration
             cache.update_from_message(&msg1, RecordSource::Recursive);
-            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 2);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 2);
 
             // Even better message
             cache.update_from_message(&msg1, RecordSource::Pinned);
-            assert_eq!(cache.lookup_with_type(&name, t, |x| x).unwrap().get_answers().len(), 1);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 1);
         }).unwrap();
+    }
+    #[test]
+    fn test_fill_response() {
+        let cache = Cache::default();
+        let mut msg = Message::new();
+        msg.message_type(MessageType::Response);
+        msg.op_code(OpCode::Query);
+        let t = RecordType::A;
+        let mut q = Query::new();
+        q.name(name("www.google.com"));
+        q.query_type(t);
+        msg.add_query(q.clone());
+        cache.update_from_message(&msg, RecordSource::Recursive);
+
+        msg = Message::new();
+        msg.add_query(q.clone());
+        assert!(cache.fill_response(&mut msg));
+        q.name(name("www.baidu.com"));
+        msg = Message::new();
+        msg.add_query(q.clone());
+        assert!(!cache.fill_response(&mut msg));
+        q.name(name("www.google.com"));
+        q.query_type(RecordType::AAAA);
+        msg = Message::new();
+        msg.add_query(q.clone());
+        assert!(!cache.fill_response(&mut msg));
     }
     #[test]
     fn test_cache_case_insensitivity() {
         let mut cache = CachePlain::default();
-        cache.lookup_or_insert(&name("www.google.com"));
-        assert!(cache.lookup(&name("www.google.com")).is_some());
-        assert!(cache.lookup(&name("www.baidu.com")).is_none());
-        assert!(cache.lookup(&name("wWw.goOgle.coM")).is_some());
+        let mut msg = Message::new();
+        msg.message_type(MessageType::Response);
+        msg.op_code(OpCode::Query);
+        let t = RecordType::A;
+        let mut q = Query::new();
+        q.name(name("www.google.com"));
+        q.query_type(t);
+        msg.add_query(q.clone());
+
+        cache.update(&msg, RecordSource::Recursive);
+        assert!(cache.lookup(&q).is_some());
+        assert!(cache.lookup(q.name(name("www.baidu.com"))).is_none());
+        assert!(cache.lookup(q.name(name("wWw.goOgle.coM"))).is_some());
     }
     #[test]
     fn test_ttl_adjust() {

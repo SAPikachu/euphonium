@@ -8,7 +8,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, CloneExt, MessageExt, Future, AsDisplay};
+use utils::{Result, CloneExt, Future, AsDisplay};
 use query::{query_multiple_handle_futures, query as query_one};
 use cache::{Cache, RecordSource};
 use nscache::NsCache;
@@ -332,9 +332,7 @@ impl RecursiveResolver {
         Ok(ret)
     }
     fn resolve_next(&self, q: &Query) -> Result<Message> {
-        if let Some(msg) = self.get_cache().lookup_with_type(
-            q.get_name(), q.get_query_type(), |m| m.clone_resp_for(q),
-        ) {
+        if let Some(msg) = self.get_cache().lookup(q, |m| m.create_response()) {
             return Ok(msg);
         }
         let resolver = RecursiveResolver {
