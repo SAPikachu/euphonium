@@ -47,7 +47,7 @@ struct CacheSharedData {
     global_expiration_counter: Arc<AtomicUsize>,
     config: Arc<Config>,
 }
-pub struct RecordTypeEntry {
+pub struct RecordEntry {
     message: Message,
     expiration: Option<SystemTime>,
     ttl: TtlMode,
@@ -56,7 +56,7 @@ pub struct RecordTypeEntry {
     record_expiration_counter: usize,
     shared: Arc<CacheSharedData>,
 }
-impl RecordTypeEntry {
+impl RecordEntry {
     pub fn maybe_notify_expiration(&self) {
         let sender_locked = match self.shared.expiration_notifier {
             None => return,
@@ -143,7 +143,7 @@ impl RecordTypeEntry {
 
 #[derive(Default)]
 pub struct CachePlain {
-    records: HashMap<Key, RecordTypeEntry>,
+    records: HashMap<Key, RecordEntry>,
     shared: Arc<CacheSharedData>,
 }
 pub type CacheInst = Mutex<CachePlain>;
@@ -151,7 +151,7 @@ pub type CacheInst = Mutex<CachePlain>;
 impl CachePlain {
     /*
     pub fn gc(&mut self) {
-        let mut new_map = HashMap::<RecordType, RecordTypeEntry>::new();
+        let mut new_map = HashMap::<RecordType, RecordEntry>::new();
         new_map.extend(self.records.drain().filter(
             |&(_, ref v)| !v.is_expired() &&
                           v.message.get_response_code() == ResponseCode::NoError &&
@@ -165,7 +165,7 @@ impl CachePlain {
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
-    pub fn lookup(&self, key: &Query) -> Option<&RecordTypeEntry> {
+    pub fn lookup(&self, key: &Query) -> Option<&RecordEntry> {
         self.records.get(&key.into())
     }
     pub fn purge(&mut self, key: &Query) -> Option<Message> {
@@ -206,7 +206,7 @@ impl CachePlain {
         let mut cache_msg = msg.clone_resp();
         cache_msg.add_query(msg.get_queries()[0].clone());
         let ttl_mode = self.get_ttl_mode(source);
-        self.records.insert(key, RecordTypeEntry {
+        self.records.insert(key, RecordEntry {
             message: cache_msg,
             expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
             ttl: ttl_mode,
@@ -240,7 +240,7 @@ impl Cache {
         }
     }
     pub fn lookup<F, R>(&self, key: &Query, op: F) -> Option<R>
-        where F: FnOnce(&RecordTypeEntry) -> R,
+        where F: FnOnce(&RecordEntry) -> R,
     {
         self.operate(|x| x.lookup(key.into()).map(op))
     }
@@ -439,7 +439,7 @@ mod tests {
         mioco_config_start(move || {
             let cache = CachePlain::default();
             let min_ttl = cache.shared.config.cache.min_response_ttl;
-            let mut entry = RecordTypeEntry {
+            let mut entry = RecordEntry {
                 message: Message::new(),
                 expiration: None,
                 ttl: TtlMode::Original,
