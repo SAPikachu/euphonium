@@ -30,7 +30,7 @@ impl ForwardingResolver {
         let msg = try!(query(q.clone(), self.server, *parent.config.query.timeout));
         if let Some(ref ipset) = self.accepted_ips {
             // FIXME: Do we need IPv6 here?
-            if msg.get_answers().iter().any(|x| if let RData::A {address} = *x.get_rdata()
+            if msg.get_answers().iter().any(|x| if let RData::A(address) = *x.get_rdata()
                 { !ipset.test(IpAddr::V4(address)) } else { false })
             {
                 // Not in accepted IP list

@@ -97,7 +97,7 @@ impl RecursiveResolver {
         // TODO: IPv6
         let result = try!(self.resolve_next(&query));
         let ips = result.get_answers().iter().filter_map(|x| match *x.get_rdata() {
-            RData::A {ref address} => Some((IpAddr::V4(*address), x.get_ttl())),
+            RData::A(ref address) => Some((IpAddr::V4(*address), x.get_ttl())),
             _ => None,
         }).collect_vec();
         self.get_ns_cache().update(auth_zone, ips.iter().map(|&(ip, ttl)| (ip, ns.clone(), ttl as u64)));
@@ -206,7 +206,7 @@ impl RecursiveResolver {
             }
             unresolved_cnames.push(cnames[0]);
             name = match *cnames[0].get_rdata() {
-                RData::CNAME {ref cname} => cname,
+                RData::CNAME(ref cname) => cname,
                 _ => panic!("Record type doesn't match RData"),
             };
         }
@@ -225,7 +225,7 @@ impl RecursiveResolver {
         if let Some(unresolved_cnames) = self.find_unresolved_cnames(&msg) {
             let final_record = &unresolved_cnames[unresolved_cnames.len() - 1];
             let next_name = match *final_record.get_rdata() {
-                RData::CNAME {ref cname} => cname.clone(),
+                RData::CNAME(ref cname) => cname.clone(),
                 _ => panic!("Record type doesn't match RData"),
             };
             if !self.register_query(QueriedItem::CNAME(next_name.clone())) {
@@ -259,7 +259,9 @@ impl RecursiveResolver {
                     unresolved_cnames.iter().cloned().foreach(|x| {
                         new_msg.add_answer(x);
                     });
-                    new_msg.add_all_answers(next_msg.get_answers());
+                    next_msg.get_answers().iter().cloned().foreach(|x| {
+                        new_msg.add_answer(x);
+                    });
                     return Ok(new_msg);
                 },
             };
@@ -269,7 +271,7 @@ impl RecursiveResolver {
     fn handle_ns_referral(&self, msg: Message) -> Result<Message> {
         let mut ns_domains : HashMap<_, _> = msg.get_name_servers().iter()
         .filter_map(|x| match *x.get_rdata() {
-            RData::NS {ref nsdname} => Some((nsdname.clone(), x.get_name().clone())),
+            RData::NS(ref nsdname) => Some((nsdname.clone(), x.get_name().clone())),
             _ => None,
         })
         .collect();
@@ -295,10 +297,10 @@ impl RecursiveResolver {
         let ns_items: Vec<_> = msg.get_additional().iter()
         .filter(|x| ns_domains.contains_key(x.get_name()))
         .filter_map(|x| match *x.get_rdata() {
-            RData::A {ref address} => Some((
+            RData::A(ref address) => Some((
                 IpAddr::V4(*address), x.get_name().clone(), x.get_ttl(),
             )),
-            RData::AAAA {ref address} => Some((
+            RData::AAAA(ref address) => Some((
                 IpAddr::V6(*address), x.get_name().clone(), x.get_ttl(),
             )),
             _ => None,
