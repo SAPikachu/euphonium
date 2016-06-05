@@ -259,10 +259,13 @@ impl CachePlain {
         .filter(|x| x.get_rr_type() != RecordType::OPT);
         // TODO: NXDomain should be cached for shorter time
         let min_cache_ttl = self.shared.config.cache.min_cache_ttl;
-        let cache_ttl = max(
+        let mut cache_ttl = max(
             min_cache_ttl,
             all_records.map(|x| x.get_ttl()).min().unwrap_or(min_cache_ttl),
         ) as u64;
+        if msg.get_response_code() != ResponseCode::NoError {
+            cache_ttl = min(cache_ttl, self.shared.config.cache.neg_cache_ttl as u64);
+        }
         debug!("Updating cache: {} -> {} (TTL: {})",
                msg.get_queries()[0].as_disp(), msg.as_disp(), cache_ttl);
         let mut cache_msg = msg.clone_resp();
@@ -316,6 +319,9 @@ impl Cache {
     {
         let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
         op(&mut *guard)
+    }
+    pub fn gc(&self) {
+        self.operate(|x| x.gc());
     }
     pub fn update_from_message(&self, msg: &Message, source: RecordSource) {
         if cfg!(debug_assertions) {
@@ -408,6 +414,25 @@ mod tests {
                 add_entry!(cache, "www.nonexistent7.com", A, NXDomain);
                 add_entry!(cache, "www.nonexistent8.com", A, NXDomain);
                 assert_eq!(cache.len(), 5);
+            });
+        }).unwrap();
+    }
+    #[test]
+    fn test_neg_ttl() {
+        mioco_config_start(move || {
+            let mut config = Config::default();
+            config.cache.cache_retention_time = Duration::from_secs(1).into();
+            config.cache.min_cache_ttl = 1;
+            config.cache.neg_cache_ttl = 1;
+            let (send, _) = mioco::sync::mpsc::channel::<Query>();
+            Cache::new(send, Arc::new(config)).operate(|mut cache| {
+                add_entry!(cache, "www.nonexistent.com", A, NXDomain);
+                assert_eq!(cache.len(), 1);
+                cache.gc();
+                assert_eq!(cache.len(), 1);
+                mioco::sleep(Duration::from_secs(3));
+                cache.gc();
+                assert_eq!(cache.len(), 0);
             });
         }).unwrap();
     }

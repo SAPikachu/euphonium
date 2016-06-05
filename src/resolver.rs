@@ -144,7 +144,7 @@ impl RcResolver {
                 );
                 if let Some(res) = resolver_weak.upgrade() {
                     if timer.try_read().is_some() {
-                        res.cache.operate(|x| x.gc());
+                        res.cache.gc();
                         timer = create_timer();
                         continue;
                     }

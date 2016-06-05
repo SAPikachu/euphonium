@@ -75,6 +75,7 @@ impl FromStorage<String> for PermissionBits {
 pub struct CacheConfig {
     pub min_cache_ttl: u32,
     pub min_response_ttl: u32,
+    pub neg_cache_ttl: u32,
     pub cache_retention_time: ProxiedValue<u32, Duration>,
     pub cache_limit: usize,
     pub gc_aggressive_threshold: usize,
