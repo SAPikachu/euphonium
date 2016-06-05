@@ -212,6 +212,14 @@ impl CachePlain {
         debug!("GC[{:?}]: {} deleted, {} entries after GC, {} elapsed",
                mode, removed, self.len(), elapsed);
     }
+    fn ensure_cache_limit(&mut self) {
+        if self.len() > self.shared.config.cache.cache_limit - 1 {
+            // Remove random elements to reduce number of entries
+            let num_to_remove = self.len() - self.shared.config.cache.cache_limit + 1;
+            let keys = self.records.keys().take(num_to_remove).cloned().collect_vec();
+            keys.iter().foreach(|x| { self.records.remove(x); });
+        }
+    }
     pub fn len(&self) -> usize {
         self.records.len()
     }
@@ -232,6 +240,7 @@ impl CachePlain {
         }
     }
     pub fn update(&mut self, msg: &Message, source: RecordSource) {
+        self.ensure_cache_limit();
         assert!(msg.get_queries().len() == 1);
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
         if !accepted_responses.contains(&msg.get_response_code()) {
@@ -360,6 +369,48 @@ mod tests {
     fn name(raw: &str) -> Name {
         Name::parse(raw, Some(&Name::root())).unwrap()
     }
+    macro_rules! add_entry {
+        ($cache:ident, $name:expr, $rtyp:ident, $rcode:ident $(, [$ttl:expr, $recdata:expr])*) => {{
+            let name = name($name);
+            let mut q = Query::new();
+            q.name(name);
+            let mut msg = Message::new();
+            q.query_type(RecordType::$rtyp);
+            msg.message_type(MessageType::Response);
+            msg.response_code(ResponseCode::$rcode);
+            msg.add_query(q);
+            $(
+                let mut rec = Record::new();
+                rec.ttl($ttl);
+                rec.rr_type(RecordType::$rtyp);
+                rec.rdata(RData::$rtyp($recdata));
+                msg.add_answer(rec);
+             )*;
+            $cache.update(&msg, RecordSource::Recursive);
+        }}
+    }
+    #[test]
+    fn test_limit() {
+        mioco_config_start(move || {
+            let mut config = Config::default();
+            config.cache.cache_retention_time = Duration::from_secs(1).into();
+            config.cache.min_cache_ttl = 1;
+            config.cache.cache_limit = 5;
+            config.cache.gc_aggressive_threshold = 10;
+            let (send, _) = mioco::sync::mpsc::channel::<Query>();
+            Cache::new(send, Arc::new(config)).operate(|mut cache| {
+                add_entry!(cache, "www.nonexistent1.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent2.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent3.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent4.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent5.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent6.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent7.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent8.com", A, NXDomain);
+                assert_eq!(cache.len(), 5);
+            });
+        }).unwrap();
+    }
     #[test]
     fn test_gc() {
         mioco_config_start(move || {
@@ -371,32 +422,12 @@ mod tests {
             let (send, _) = mioco::sync::mpsc::channel::<Query>();
             Cache::new(send, Arc::new(config)).operate(|mut cache| {
                 let shared = cache.shared.clone();
-                macro_rules! add_entry {
-                    ($name:expr, $rtyp:ident, $rcode:ident $(, [$ttl:expr, $recdata:expr])*) => {{
-                        let name = name($name);
-                        let mut q = Query::new();
-                        q.name(name);
-                        let mut msg = Message::new();
-                        q.query_type(RecordType::$rtyp);
-                        msg.message_type(MessageType::Response);
-                        msg.response_code(ResponseCode::$rcode);
-                        msg.add_query(q);
-                        $(
-                            let mut rec = Record::new();
-                            rec.ttl($ttl);
-                            rec.rr_type(RecordType::$rtyp);
-                            rec.rdata(RData::$rtyp($recdata));
-                            msg.add_answer(rec);
-                        )*;
-                        cache.update(&msg, RecordSource::Recursive);
-                    }}
-                };
 
                 // Normal mode
-                add_entry!("www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
-                add_entry!("www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
-                add_entry!("www.google.com", CNAME, NoError, [1, name("cname")]);
-                add_entry!("www.nonexistent.com", A, NXDomain);
+                add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
+                add_entry!(cache, "www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
+                add_entry!(cache, "www.google.com", CNAME, NoError, [1, name("cname")]);
+                add_entry!(cache, "www.nonexistent.com", A, NXDomain);
 
                 assert_eq!(cache.len(), 4);
                 cache.gc_impl(GcMode::Normal);
@@ -409,10 +440,10 @@ mod tests {
                 assert_eq!(cache.len(), 0);
 
                 // Aggressive mode
-                add_entry!("www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
-                add_entry!("www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
-                add_entry!("www.google.com", CNAME, NoError, [1, name("cname")]);
-                add_entry!("www.nonexistent.com", A, NXDomain);
+                add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
+                add_entry!(cache, "www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
+                add_entry!(cache, "www.google.com", CNAME, NoError, [1, name("cname")]);
+                add_entry!(cache, "www.nonexistent.com", A, NXDomain);
 
                 assert_eq!(cache.len(), 4);
                 cache.gc_impl(GcMode::Aggressive);
@@ -422,20 +453,20 @@ mod tests {
                 assert_eq!(cache.len(), 0);
 
                 // Auto mode
-                add_entry!("www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
-                add_entry!("www.nonexistent1.com", A, NXDomain);
-                add_entry!("www.nonexistent2.com", A, NXDomain);
-                add_entry!("www.nonexistent3.com", A, NXDomain);
-                add_entry!("www.nonexistent4.com", A, NXDomain);
-                add_entry!("www.nonexistent5.com", A, NXDomain);
-                add_entry!("www.nonexistent6.com", A, NXDomain);
-                add_entry!("www.nonexistent7.com", A, NXDomain);
-                add_entry!("www.nonexistent8.com", A, NXDomain);
+                add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
+                add_entry!(cache, "www.nonexistent1.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent2.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent3.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent4.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent5.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent6.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent7.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent8.com", A, NXDomain);
                 assert_eq!(cache.len(), 9);
                 cache.gc();
                 assert_eq!(cache.len(), 9);
-                add_entry!("www.nonexistent9.com", A, NXDomain);
-                add_entry!("www.nonexistenta.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistent9.com", A, NXDomain);
+                add_entry!(cache, "www.nonexistenta.com", A, NXDomain);
                 cache.gc();
                 assert_eq!(cache.len(), 1);
             });
