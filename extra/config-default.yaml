@@ -8,6 +8,9 @@ serve:
 cache:
     min_cache_ttl: 15
     min_response_ttl: 1
+    cache_retention_time: 172800 # Seconds
+    cache_limit: 655360
+    gc_aggressive_threshold: 90
 
 forwarders:
     - servers:

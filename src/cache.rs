@@ -1,4 +1,4 @@
-use std::time::{SystemTime, Duration};
+use std::time::{SystemTime, Duration, Instant};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -10,6 +10,8 @@ use mioco::sync::mpsc::{Sender};
 use trust_dns::rr::{Name, RecordType, Record, DNSClass};
 use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
 use parking_lot::Mutex as PlMutex;
+use itertools::Itertools;
+use chrono::duration::Duration as ChDuration;
 
 use utils::{CloneExt, MessageExt, AsDisplay};
 use config::Config;
@@ -40,6 +42,11 @@ pub enum RecordSource {
     Recursive,
     Pinned,
 }
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GcMode {
+    Normal,
+    Aggressive,
+}
 #[derive(Default)]
 struct CacheSharedData {
     // Use parking_lot::Mutex here because its overhead without contention is minimal
@@ -57,7 +64,39 @@ pub struct RecordEntry {
     shared: Arc<CacheSharedData>,
 }
 impl RecordEntry {
-    pub fn maybe_notify_expiration(&self) {
+    fn is_gc_eligible(&self, mode: GcMode) -> bool {
+        let exp = match self.expiration {
+            Some(exp) => exp,
+            None => return false,
+        };
+        if self.expiration_notified.load(Ordering::Relaxed) {
+            return false;
+        }
+        let is_important_query = [RecordType::A, RecordType::AAAA].contains(
+            &self.message.get_queries()[0].get_query_type()
+        );
+        let is_useful_resp = self.message.get_response_code() == ResponseCode::NoError &&
+            !self.message.get_answers().is_empty();
+        if mode == GcMode::Aggressive && (!is_important_query || !is_useful_resp) {
+            return true;
+        }
+        if !self.is_expired() {
+            return false;
+        }
+        if mode == GcMode::Aggressive {
+            // Delete all expired entries in aggressive mode
+            return true;
+        }
+        if !is_useful_resp {
+            // Delete all expired entries that are not useful
+            return true;
+        }
+        if &SystemTime::now() > &(exp + *self.shared.config.cache.cache_retention_time) {
+            return true;
+        }
+        false
+    }
+    fn maybe_notify_expiration(&self) {
         let sender_locked = match self.shared.expiration_notifier {
             None => return,
             Some(ref s) => s,
@@ -149,16 +188,30 @@ pub struct CachePlain {
 pub type CacheInst = Mutex<CachePlain>;
 
 impl CachePlain {
-    /*
+    fn gc_impl(&mut self, mode: GcMode) -> usize {
+        let removed_keys = self.records.iter()
+        .filter(|&(_, ref entry)| entry.is_gc_eligible(mode))
+        .map(|(key, _)| key.clone())
+        .collect_vec();
+        removed_keys.iter().foreach(|k| { self.records.remove(k); });
+        removed_keys.len()
+    }
     pub fn gc(&mut self) {
-        let mut new_map = HashMap::<RecordType, RecordEntry>::new();
-        new_map.extend(self.records.drain().filter(
-            |&(_, ref v)| !v.is_expired() &&
-                          v.message.get_response_code() == ResponseCode::NoError &&
-                          v.message.get_answers().len() > 0
-        ));
-        self.records = new_map;
-    }*/
+        let mode = {
+            let conf = &self.shared.config.cache;
+            if self.len() * 100 / conf.cache_limit > conf.gc_aggressive_threshold {
+                GcMode::Aggressive
+            } else {
+                GcMode::Normal
+            }
+        };
+        let start_time = Instant::now();
+        let removed = self.gc_impl(mode);
+        let elapsed = ChDuration::from_std(start_time.elapsed())
+        .expect("This shouldn't take too long");
+        debug!("GC[{:?}]: {} deleted, {} entries after GC, {} elapsed",
+               mode, removed, self.len(), elapsed);
+    }
     pub fn len(&self) -> usize {
         self.records.len()
     }
@@ -294,61 +347,100 @@ impl Default for Cache {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::*;
-    use std::time::{SystemTime, Duration};
+    use std::sync::*;
+    use std::time::*;
     use trust_dns::rr::*;
     use trust_dns::op::*;
     use super::*;
     use utils::*;
+    use config::*;
+    use mioco;
     use ::mioco_config_start;
 
     fn name(raw: &str) -> Name {
         Name::parse(raw, Some(&Name::root())).unwrap()
     }
-    /*
     #[test]
-    #[allow(unused_variables)]
-    fn test_entry_gc() {
+    fn test_gc() {
         mioco_config_start(move || {
-            let mut cache = CachePlain::default();
-            let shared = cache.shared.clone();
-            let name = Name::parse("www.google.com", Some(&Name::root())).unwrap();
-            let mut entry = cache.lookup_or_insert(&name);
-            let mut q = Query::new();
-            q.name(name.clone());
+            let mut config = Config::default();
+            config.cache.cache_retention_time = Duration::from_secs(1).into();
+            config.cache.min_cache_ttl = 1;
+            config.cache.cache_limit = 100;
+            config.cache.gc_aggressive_threshold = 10;
+            let (send, _) = mioco::sync::mpsc::channel::<Query>();
+            Cache::new(send, Arc::new(config)).operate(|mut cache| {
+                let shared = cache.shared.clone();
+                macro_rules! add_entry {
+                    ($name:expr, $rtyp:ident, $rcode:ident $(, [$ttl:expr, $recdata:expr])*) => {{
+                        let name = name($name);
+                        let mut q = Query::new();
+                        q.name(name);
+                        let mut msg = Message::new();
+                        q.query_type(RecordType::$rtyp);
+                        msg.message_type(MessageType::Response);
+                        msg.response_code(ResponseCode::$rcode);
+                        msg.add_query(q);
+                        $(
+                            let mut rec = Record::new();
+                            rec.ttl($ttl);
+                            rec.rr_type(RecordType::$rtyp);
+                            rec.rdata(RData::$rtyp($recdata));
+                            msg.add_answer(rec);
+                        )*;
+                        cache.update(&msg, RecordSource::Recursive);
+                    }}
+                };
 
-            let mut msg1 = Message::new();
-            q.query_type(RecordType::TXT);
-            msg1.message_type(MessageType::Response);
-            msg1.add_query(q.clone());
-            entry.update(&msg1, RecordSource::Recursive);
+                // Normal mode
+                add_entry!("www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
+                add_entry!("www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
+                add_entry!("www.google.com", CNAME, NoError, [1, name("cname")]);
+                add_entry!("www.nonexistent.com", A, NXDomain);
 
-            let mut msg1 = Message::new();
-            q.query_type(RecordType::AAAA);
-            msg1.message_type(MessageType::Response);
-            msg1.add_query(q.clone());
-            msg1.response_code(ResponseCode::NXDomain);
-            entry.update(&msg1, RecordSource::Recursive);
+                assert_eq!(cache.len(), 4);
+                cache.gc_impl(GcMode::Normal);
+                assert_eq!(cache.len(), 4);
+                shared.global_expiration_counter.fetch_add(2, Ordering::Relaxed);
+                cache.gc_impl(GcMode::Normal);
+                assert_eq!(cache.len(), 3);
+                mioco::sleep(Duration::from_secs(3));
+                cache.gc_impl(GcMode::Normal);
+                assert_eq!(cache.len(), 0);
 
-            let mut msg1 = Message::new();
-            q.query_type(RecordType::A);
-            msg1.message_type(MessageType::Response);
-            msg1.add_query(q.clone());
-            msg1.response_code(ResponseCode::NXDomain);
-            msg1.response_code(ResponseCode::NoError);
-            let mut rec = Record::new();
-            rec.ttl(1);
-            rec.name(name.clone());
-            msg1.add_answer(rec.clone());
-            entry.update(&msg1, RecordSource::Recursive);
+                // Aggressive mode
+                add_entry!("www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
+                add_entry!("www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
+                add_entry!("www.google.com", CNAME, NoError, [1, name("cname")]);
+                add_entry!("www.nonexistent.com", A, NXDomain);
 
-            assert_eq!(entry.len(), 3);
-            entry.gc();
-            assert_eq!(entry.len(), 1);
-            shared.global_expiration_counter.fetch_add(2, Ordering::Relaxed);
-            entry.gc();
-            assert_eq!(entry.len(), 0);
+                assert_eq!(cache.len(), 4);
+                cache.gc_impl(GcMode::Aggressive);
+                assert_eq!(cache.len(), 2);
+                shared.global_expiration_counter.fetch_add(2, Ordering::Relaxed);
+                cache.gc_impl(GcMode::Aggressive);
+                assert_eq!(cache.len(), 0);
+
+                // Auto mode
+                add_entry!("www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
+                add_entry!("www.nonexistent1.com", A, NXDomain);
+                add_entry!("www.nonexistent2.com", A, NXDomain);
+                add_entry!("www.nonexistent3.com", A, NXDomain);
+                add_entry!("www.nonexistent4.com", A, NXDomain);
+                add_entry!("www.nonexistent5.com", A, NXDomain);
+                add_entry!("www.nonexistent6.com", A, NXDomain);
+                add_entry!("www.nonexistent7.com", A, NXDomain);
+                add_entry!("www.nonexistent8.com", A, NXDomain);
+                assert_eq!(cache.len(), 9);
+                cache.gc();
+                assert_eq!(cache.len(), 9);
+                add_entry!("www.nonexistent9.com", A, NXDomain);
+                add_entry!("www.nonexistenta.com", A, NXDomain);
+                cache.gc();
+                assert_eq!(cache.len(), 1);
+            });
         }).unwrap();
-    }*/
+    }
     #[test]
     fn test_record_preference() {
         mioco_config_start(move || {

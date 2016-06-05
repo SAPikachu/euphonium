@@ -22,6 +22,11 @@ impl<TStorage, TValue> Deref for ProxiedValue<TStorage, TValue> {
         &self.0
     }
 }
+impl<TStorage, TValue> From<TValue> for ProxiedValue<TStorage, TValue> {
+    fn from(val: TValue) -> Self {
+        ProxiedValue(val, PhantomData)
+    }
+}
 pub trait FromStorage<TStorage> {
     fn from_storage<TDes: ?Sized + Deserializer>(storage: TStorage) -> Result<Self, TDes::Error> where Self: Sized;
 }
@@ -70,6 +75,9 @@ impl FromStorage<String> for PermissionBits {
 pub struct CacheConfig {
     pub min_cache_ttl: u32,
     pub min_response_ttl: u32,
+    pub cache_retention_time: ProxiedValue<u32, Duration>,
+    pub cache_limit: usize,
+    pub gc_aggressive_threshold: usize,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
