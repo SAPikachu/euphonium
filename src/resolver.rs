@@ -1,7 +1,9 @@
 use std::sync::{Arc, Weak};
 use std::default::Default;
+use std::sync::mpsc::TryRecvError;
 
 use mioco;
+use mioco::timer::Timer;
 use mioco::sync::Mutex;
 use mioco::sync::mpsc::{channel, Receiver};
 use trust_dns::op::{Message, ResponseCode, Query};
@@ -63,7 +65,7 @@ impl RcResolver {
         }
         ret.init_root_servers();
         ret.attach();
-        ret.handle_cache_expiration_channel(recv);
+        ret.run_cache_cleaner(recv);
         ret
     }
     #[cfg(test)]
@@ -123,11 +125,34 @@ impl RcResolver {
             _ => Err(ControlError::UnknownCommand),
         }
     }
-    fn handle_cache_expiration_channel(&self, ch: Receiver<Query>) {
+    #[allow(while_let_loop)]
+    fn run_cache_cleaner(&self, ch: Receiver<Query>) {
         let resolver_weak = self.to_weak();
+        let gc_interval = *self.config.cache.gc_interval;
         mioco::spawn(move || {
-            while let Ok(q) = ch.recv() {
+            let create_timer = || -> Timer {
+                let mut timer = Timer::new();
+                timer.set_timeout(gc_interval.as_secs() as i64 * 1000);
+                timer
+            };
+            let mut timer = create_timer();
+            loop {
+                // Avoid issues of spurious wakeup, check below
+                select!(
+                    r:timer => {},
+                    r:ch => {},
+                );
                 if let Some(res) = resolver_weak.upgrade() {
+                    if timer.try_read().is_some() {
+                        res.cache.operate(|x| x.gc());
+                        timer = create_timer();
+                        continue;
+                    }
+                    let q = match ch.try_recv() {
+                        Ok(q) => q,
+                        Err(TryRecvError::Empty) => continue,
+                        Err(TryRecvError::Disconnected) => break,
+                    };
                     let updated = match RecursiveResolver::resolve(&q, res.clone().into()) {
                         Ok(msg) => [ResponseCode::NoError, ResponseCode::NXDomain]
                                    .contains(&msg.get_response_code()),

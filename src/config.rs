@@ -78,6 +78,7 @@ pub struct CacheConfig {
     pub cache_retention_time: ProxiedValue<u32, Duration>,
     pub cache_limit: usize,
     pub gc_aggressive_threshold: usize,
+    pub gc_interval: ProxiedValue<u32, Duration>,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
