@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::cmp::{min, max};
+use std::hash::Hash;
 
 use mioco;
 use mioco::sync::{Mutex};
@@ -47,7 +48,7 @@ pub enum GcMode {
     Normal,
     Aggressive,
 }
-#[derive(Default)]
+#[cfg_attr(test, derive(Default))]
 struct CacheSharedData {
     // Use parking_lot::Mutex here because its overhead without contention is minimal
     expiration_notifier: Option<PlMutex<Sender<Query>>>,
@@ -63,7 +64,10 @@ pub struct RecordEntry {
     record_expiration_counter: usize,
     shared: Arc<CacheSharedData>,
 }
-impl RecordEntry {
+pub trait IsGcEligible {
+    fn is_gc_eligible(&self, mode: GcMode) -> bool;
+}
+impl IsGcEligible for RecordEntry {
     fn is_gc_eligible(&self, mode: GcMode) -> bool {
         let exp = match self.expiration {
             Some(exp) => exp,
@@ -96,6 +100,8 @@ impl RecordEntry {
         }
         false
     }
+}
+impl RecordEntry {
     fn maybe_notify_expiration(&self) {
         let sender_locked = match self.shared.expiration_notifier {
             None => return,
@@ -180,25 +186,48 @@ impl RecordEntry {
     }
 }
 
-#[derive(Default)]
+#[cfg_attr(test, derive(Default))]
 pub struct CachePlain {
     records: HashMap<Key, RecordEntry>,
     shared: Arc<CacheSharedData>,
 }
 pub type CacheInst = Mutex<CachePlain>;
 
-impl CachePlain {
+pub trait CacheCommon<TKey, TValue> where TKey: Hash + Eq + PartialEq + Clone {
+    fn get_records(&self) -> &HashMap<TKey, TValue>;
+    fn get_mut_records(&mut self) -> &mut HashMap<TKey, TValue>;
+    fn get_config(&self) -> &Config;
+    fn name() -> &'static str { "Cache" }
+    fn len(&self) -> usize {
+        self.get_records().len()
+    }
+    fn is_empty(&self) -> bool {
+        self.get_records().is_empty()
+    }
+    fn ensure_cache_limit(&mut self) {
+        if self.len() > self.get_config().cache.cache_limit - 1 {
+            // Remove random elements to reduce number of entries
+            let num_to_remove = self.len() - self.get_config().cache.cache_limit + 1;
+            let keys = self.get_records().keys().take(num_to_remove).cloned().collect_vec();
+            keys.iter().foreach(|x| { self.get_mut_records().remove(x); });
+        }
+    }
+}
+pub trait CacheCommonGc<TKey, TValue> : CacheCommon<TKey, TValue>
+    where TKey: Hash + Eq + PartialEq + Clone,
+          TValue: IsGcEligible,
+{
     fn gc_impl(&mut self, mode: GcMode) -> usize {
-        let removed_keys = self.records.iter()
+        let removed_keys = self.get_records().iter()
         .filter(|&(_, ref entry)| entry.is_gc_eligible(mode))
         .map(|(key, _)| key.clone())
         .collect_vec();
-        removed_keys.iter().foreach(|k| { self.records.remove(k); });
+        removed_keys.iter().foreach(|k| { self.get_mut_records().remove(k); });
         removed_keys.len()
     }
-    pub fn gc(&mut self) {
+    fn gc(&mut self) {
         let mode = {
-            let conf = &self.shared.config.cache;
+            let conf = &self.get_config().cache;
             if self.len() * 100 / conf.cache_limit > conf.gc_aggressive_threshold {
                 GcMode::Aggressive
             } else {
@@ -209,23 +238,27 @@ impl CachePlain {
         let removed = self.gc_impl(mode);
         let elapsed = ChDuration::from_std(start_time.elapsed())
         .expect("This shouldn't take too long");
-        debug!("GC[{:?}]: {} deleted, {} entries after GC, {} elapsed",
-               mode, removed, self.len(), elapsed);
+        debug!("GC[{}, {:?}]: {} deleted, {} entries after GC, {} elapsed",
+               Self::name(), mode, removed, self.len(), elapsed);
     }
-    fn ensure_cache_limit(&mut self) {
-        if self.len() > self.shared.config.cache.cache_limit - 1 {
-            // Remove random elements to reduce number of entries
-            let num_to_remove = self.len() - self.shared.config.cache.cache_limit + 1;
-            let keys = self.records.keys().take(num_to_remove).cloned().collect_vec();
-            keys.iter().foreach(|x| { self.records.remove(x); });
-        }
+}
+impl<T, TKey, TValue> CacheCommonGc<TKey, TValue> for T
+    where TKey: Hash + Eq + PartialEq + Clone,
+          TValue: IsGcEligible,
+          T: CacheCommon<TKey, TValue>,
+{}
+impl CacheCommon<Key, RecordEntry> for CachePlain {
+    fn get_records(&self) -> &HashMap<Key, RecordEntry> {
+        &self.records
     }
-    pub fn len(&self) -> usize {
-        self.records.len()
+    fn get_mut_records(&mut self) -> &mut HashMap<Key, RecordEntry> {
+        &mut self.records
     }
-    pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+    fn get_config(&self) -> &Config {
+        &self.shared.config
     }
+}
+impl CachePlain {
     pub fn lookup(&self, key: &Query) -> Option<&RecordEntry> {
         self.records.get(&key.into())
     }
@@ -342,6 +375,7 @@ impl Cache {
         self.operate(|x| x.records.clear());
     }
 }
+#[cfg(test)]
 impl Default for Cache {
     fn default() -> Self {
         let counter = Arc::new(AtomicUsize::default());

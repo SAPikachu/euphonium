@@ -8,6 +8,7 @@ serve:
 cache:
     min_cache_ttl: 15
     min_response_ttl: 1
+    neg_cache_ttl: 3600
     cache_retention_time: 172800 # Seconds
     cache_limit: 655360
     gc_aggressive_threshold: 90 # Percent
@@ -38,7 +39,7 @@ control:
 
 internal:
     threads: 1
-    mio_notify_capacity: 131072
+    mio_notify_capacity: 65536
 
 root_servers:
     - "198.41.0.4"

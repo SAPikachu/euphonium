@@ -8,6 +8,9 @@ use std::cmp::{max, min};
 use mioco::sync::Mutex;
 use trust_dns::rr::{Name};
 
+use cache::{GcMode, CacheCommon, CacheCommonGc, IsGcEligible};
+use config::Config;
+
 const MAX_NS_TTL: u64 = 60 * 60 * 24;
 const MIN_NS_TTL: u64 = 60 * 15;
 
@@ -20,17 +23,28 @@ pub struct NsCacheEntry {
     nameservers: HashMap<IpAddr, NsItem>,
     timestamp: SystemTime,
     ttl: Option<u64>,
+    zone: Name,
 }
-impl Default for NsCacheEntry {
-    fn default() -> Self {
-        NsCacheEntry {
-            nameservers: HashMap::default(),
-            timestamp: SystemTime::now(),
-            ttl: Some(MAX_NS_TTL),
+impl IsGcEligible for NsCacheEntry {
+    fn is_gc_eligible(&self, mode: GcMode) -> bool {
+        if self.ttl.is_none() {
+            return false;
+        }
+        match mode {
+            GcMode::Normal => self.is_expired(),
+            GcMode::Aggressive => self.is_expired() || self.zone.len() > 2,
         }
     }
 }
 impl NsCacheEntry {
+    fn new(zone: Name) -> Self {
+        NsCacheEntry {
+            zone: zone,
+            nameservers: Default::default(),
+            timestamp: SystemTime::now(),
+            ttl: Some(MAX_NS_TTL),
+        }
+    }
     pub fn to_addrs(&self) -> Vec<IpAddr> {
         self.nameservers.keys().cloned().collect()
     }
@@ -62,16 +76,35 @@ impl NsCacheEntry {
         }
     }
 }
-#[derive(Default)]
+#[cfg_attr(test, derive(Default))]
 pub struct NsCachePlain {
     entries: HashMap<Name, NsCacheEntry>,
+    config: Arc<Config>,
+}
+impl CacheCommon<Name, NsCacheEntry> for NsCachePlain {
+    fn get_records(&self) -> &HashMap<Name, NsCacheEntry> {
+        &self.entries
+    }
+    fn get_mut_records(&mut self) -> &mut HashMap<Name, NsCacheEntry> {
+        &mut self.entries
+    }
+    fn get_config(&self) -> &Config {
+        &self.config
+    }
+    fn name() -> &'static str { "NsCache" }
 }
 impl NsCachePlain {
+    pub fn new(config: Arc<Config>) -> Self {
+        NsCachePlain {
+            entries: Default::default(),
+            config: config,
+        }
+    }
     pub fn lookup(&self, name: &Name) -> Option<&NsCacheEntry> {
         self.entries.get(name)
     }
     pub fn lookup_or_insert(&mut self, name: &Name) -> &mut NsCacheEntry {
-        self.entries.entry(name.clone()).or_insert_with(NsCacheEntry::default)
+        self.entries.entry(name.clone()).or_insert_with(|| NsCacheEntry::new(name.clone()))
     }
 }
 pub struct NsCache {
@@ -79,6 +112,15 @@ pub struct NsCache {
 }
 pub type RcNsCache = Arc<NsCache>;
 impl NsCache {
+    pub fn new(config: Arc<Config>) -> Self {
+        NsCache {
+            inst: Mutex::new(NsCachePlain::new(config))
+        }
+    }
+    pub fn gc(&self) {
+        let mut guard = self.lock().unwrap();
+        guard.gc();
+    }
     pub fn update<T>(&self, auth_zone: &Name, items: T)
         where T: IntoIterator<Item=(IpAddr, Name, u64)>,
     {
@@ -107,12 +149,11 @@ impl NsCache {
         }
     }
 }
+#[cfg(test)]
 impl Default for NsCache {
     fn default() -> Self {
         NsCache {
-            inst: Mutex::new(NsCachePlain {
-                entries: HashMap::new(),
-            }),
+            inst: Mutex::new(Default::default()),
         }
     }
 }
@@ -123,4 +164,3 @@ impl Deref for NsCache {
         &self.inst
     }
 }
-// TODO: Case insensitivity, add tests

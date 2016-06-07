@@ -54,7 +54,7 @@ impl RcResolver {
         let config_rc = Arc::new(config);
         let ret: RcResolver = Arc::new(Resolver {
             cache: Cache::new(send, config_rc.clone()),
-            ns_cache: NsCache::default(),
+            ns_cache: NsCache::new(config_rc.clone()),
             config: config_rc.clone(),
             forwarders: forwarders,
             control_server: Mutex::new(ControlServer::new()),
@@ -145,6 +145,7 @@ impl RcResolver {
                 if let Some(res) = resolver_weak.upgrade() {
                     if timer.try_read().is_some() {
                         res.cache.gc();
+                        res.ns_cache.gc();
                         timer = create_timer();
                         continue;
                     }
