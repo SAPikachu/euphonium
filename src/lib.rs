@@ -27,6 +27,7 @@ extern crate rustc_serialize;
 extern crate docopt;
 extern crate parking_lot;
 extern crate chrono;
+extern crate yaml_rust;
 
 pub mod utils;
 mod transport;

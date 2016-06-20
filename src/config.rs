@@ -6,10 +6,13 @@ use std::sync::Arc;
 use std::io;
 use std::fs::File;
 use std::io::{Read};
+use std::collections::btree_map::Entry as BtEntry;
 
 use serde_yaml;
+use serde_yaml::value::Value as Yaml;
 use serde::{Deserialize, Deserializer};
 use serde::de::Error as DesError;
+use yaml_rust::YamlLoader;
 
 use utils::IpSet;
 
@@ -129,12 +132,54 @@ impl Default for Config {
         serde_yaml::from_str(DEFAULT_CONFIG).expect("Default config should never fail")
     }
 }
+fn merge_yaml(base: Yaml, input: Yaml) -> Yaml {
+    let input = if let Yaml::Hash(hash) = input {
+        hash
+    } else {
+        return input
+    };
+    let mut target = if let Yaml::Hash(base_hash) = base {
+        base_hash
+    } else {
+        return Yaml::Hash(input)
+    };
+    for (k, v) in input {
+        match target.entry(k) {
+            BtEntry::Vacant(e) => { e.insert(v); },
+            BtEntry::Occupied(mut e) => {
+                let old = e.insert(Yaml::Null);
+                e.insert(merge_yaml(old, v));
+            },
+        };
+    }
+    Yaml::Hash(target)
+}
+fn merge_config_values(user_values: Yaml) -> Yaml {
+    merge_yaml(
+        YamlLoader::load_from_str(DEFAULT_CONFIG).unwrap().into_iter().next().unwrap(),
+        user_values,
+    )
+}
 impl Config {
     pub fn from_file(path: &str) -> io::Result<Self> {
         let mut file = try!(File::open(path));
         let mut buffer = String::new();
         try!(file.read_to_string(&mut buffer));
-        serde_yaml::from_str(&buffer)
+        Self::from_str(&buffer)
+    }
+    pub fn from_str(content: &str) -> io::Result<Self> {
+        let parsed_yaml_docs = try!(
+            YamlLoader::load_from_str(content)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        );
+        if parsed_yaml_docs.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Config file must contain exactly one YAML dictionary",
+            ));
+        }
+        let merged = merge_config_values(parsed_yaml_docs.into_iter().next().unwrap());
+        serde_yaml::from_value(merged)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))
     }
 }
@@ -146,5 +191,22 @@ mod tests {
     #[test]
     fn test_default_config() {
         Config::default();
+    }
+    #[test]
+    fn test_merged_config() {
+        let config_file = r#"---
+serve:
+    ip: "1.1.1.1"
+
+forwarders:
+    - servers:
+        - "1.2.3.4"
+        "#;
+        let config = Config::from_str(config_file).unwrap();
+        let default_config = Config::default();
+        assert_eq!(config.serve.ip, "1.1.1.1".parse().unwrap());
+        assert_eq!(config.serve.port, default_config.serve.port);
+        assert_eq!(config.forwarders.len(), 1);
+        assert_eq!(config.forwarders[0].servers[0], "1.2.3.4".parse().unwrap());
     }
 }

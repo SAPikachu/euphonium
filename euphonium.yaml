@@ -1,19 +1,5 @@
 ---
 
-serve:
-    ip: "127.0.0.1"
-    port: 5354
-    tcp_timeout: 5 # Seconds
-
-cache:
-    min_cache_ttl: 15
-    min_response_ttl: 1
-    neg_cache_ttl: 3600
-    cache_retention_time: 172800 # Seconds
-    cache_limit: 655360
-    gc_aggressive_threshold: 90 # Percent
-    gc_interval: 1800 # Seconds
-
 forwarders:
     - servers:
         - "8.8.8.8"
@@ -29,29 +15,3 @@ forwarders:
         - "202.96.128.166"
         - "202.96.134.133"
       accepted_ip_list: "chn_networks.txt"
-
-query:
-    timeout: 5 # Seconds
-
-control:
-    sock_path: /tmp/euphonium.sock
-    sock_permission: "0600"
-
-internal:
-    threads: 1
-    mio_notify_capacity: 65536
-
-root_servers:
-    - "198.41.0.4"
-    - "192.228.79.201"
-    - "192.33.4.12"
-    - "199.7.91.13"
-    - "192.203.230.10"
-    - "192.5.5.241"
-    - "192.112.36.4"
-    - "198.97.190.53"
-    - "192.36.148.17"
-    - "192.58.128.30"
-    - "193.0.14.129"
-    - "199.7.83.42"
-    - "202.12.27.33"

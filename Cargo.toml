@@ -29,6 +29,7 @@ serde_macros = "^0.7"
 serde_yaml = "^0.2"
 treebitmap = "^0.2"
 trust-dns = "^0.6.*"
+yaml-rust = "0.3.3"
 
 [dependencies.clippy]
 optional = true
