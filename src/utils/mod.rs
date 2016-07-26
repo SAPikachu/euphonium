@@ -12,6 +12,7 @@ use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
 use itertools::Itertools;
 
 use ::resolver::ErrorKind as ResolverErrorKind;
+use ::query::ErrorKind as QueryErrorKind;
 
 pub mod future;
 pub mod with_timeout;
@@ -45,7 +46,10 @@ quick_error! {
             from()
             description(err.description())
         }
-        ResolverError(kind: ResolverErrorKind) {
+        Resolver(kind: ResolverErrorKind) {
+            from()
+        }
+        Query(kind: QueryErrorKind) {
             from()
         }
     }

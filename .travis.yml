@@ -1,7 +1,7 @@
 language: rust
 
 rust:
-  - nightly-2016-05-25
+  - nightly-2016-07-11
   - nightly
 matrix:
   allow_failures:

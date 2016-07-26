@@ -1,5 +1,4 @@
 #![feature(plugin, custom_derive)]
-#![feature(downgraded_weak)]
 
 #![cfg_attr(feature = "clippy", plugin(clippy))]
 #![cfg_attr(not(feature = "clippy"), allow(unknown_lints))]

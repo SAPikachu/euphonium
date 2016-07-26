@@ -16,6 +16,11 @@ pub const EDNS_MAX_PAYLOAD: u16 = 1200;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
+#[derive(Debug, Clone)]
+pub enum ErrorKind {
+    InvalidId,
+}
+
 fn query_core<T: DnsMsgTransport>(q: Query, mut transport: T, enable_edns: bool) -> Result<Message> {
     let mut msg : Message = Message::new();
     msg.message_type(MessageType::Query);
