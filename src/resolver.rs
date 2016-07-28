@@ -132,7 +132,7 @@ impl RcResolver {
         mioco::spawn(move || {
             let create_timer = || -> Timer {
                 let mut timer = Timer::new();
-                timer.set_timeout(gc_interval.as_secs() as i64 * 1000);
+                timer.set_timeout(gc_interval.as_secs() * 1000);
                 timer
             };
             let mut timer = create_timer();

@@ -33,27 +33,27 @@ fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Tim
 }
 
 pub trait AsTimeoutMs {
-    fn as_timeout_ms(&self) -> i64;
+    fn as_timeout_ms(&self) -> u64;
 }
 impl AsTimeoutMs for i64 {
-    fn as_timeout_ms(&self) -> i64 {
-        *self as i64
+    fn as_timeout_ms(&self) -> u64 {
+        *self as u64
     }
 }
 impl AsTimeoutMs for i32 {
-    fn as_timeout_ms(&self) -> i64 {
-        *self as i64
+    fn as_timeout_ms(&self) -> u64 {
+        *self as u64
     }
 }
 impl AsTimeoutMs for u32 {
-    fn as_timeout_ms(&self) -> i64 {
-        *self as i64
+    fn as_timeout_ms(&self) -> u64 {
+        *self as u64
     }
 }
 impl AsTimeoutMs for Duration {
-    fn as_timeout_ms(&self) -> i64 {
+    fn as_timeout_ms(&self) -> u64 {
         debug_assert!(self.as_secs() < u32::max_value() as u64);
-        (self.as_secs() * 1000) as i64
+        (self.as_secs() * 1000) as u64
     }
 }
 pub trait TcpStreamExt where Self: Sized {
@@ -78,7 +78,7 @@ impl TcpStreamExt for TcpStream {
 pub struct WithTimeoutState<T> where T: Evented {
     inner: T,
     timer: Option<Timer>,
-    timeout_ms: i64,
+    timeout_ms: u64,
 }
 impl<T> WithTimeoutState<T> where T: Evented {
     fn create_timer(&self) -> Timer {
@@ -118,7 +118,7 @@ impl<T> io::Write for WithTimeoutState<MioAdapter<T>> where T: 'static + mio::Ev
     }
 }
 pub trait WithTimeout<T> where T: Evented, Self: Sized {
-    fn with_timeout_core(self, timeout_ms: i64, reset_before_invoke: bool) -> WithTimeoutState<T>;
+    fn with_timeout_core(self, timeout_ms: u64, reset_before_invoke: bool) -> WithTimeoutState<T>;
     fn with_timeout<TMs: AsTimeoutMs>(self, timeout: TMs) -> WithTimeoutState<T> {
         self.with_timeout_core(timeout.as_timeout_ms(), false)
     }
@@ -127,7 +127,7 @@ pub trait WithTimeout<T> where T: Evented, Self: Sized {
     }
 }
 impl<T> WithTimeout<T> for T where T: Evented {
-    fn with_timeout_core(self, timeout_ms: i64, reset_before_invoke: bool) -> WithTimeoutState<T> {
+    fn with_timeout_core(self, timeout_ms: u64, reset_before_invoke: bool) -> WithTimeoutState<T> {
         let mut ret = WithTimeoutState {
             inner: self,
             timer: None,
