@@ -184,13 +184,14 @@ impl RecursiveResolver {
         let mut name = self.state.query.get_name();
         let query_type = self.state.query.get_query_type();
         let mut unresolved_cnames = Vec::<&Record>::new();
+        let trust_cname_hinting = self.get_config().query.trust_cname_hinting;
         loop {
             let cnames = {
                 let matched_records = || msg.get_answers().iter()
                 .filter(|x| x.get_name() == name);
                 let have_real_record = matched_records()
                 .any(|x| x.get_rr_type() == query_type);
-                if have_real_record {
+                if have_real_record && trust_cname_hinting {
                     return None;
                 }
                 matched_records().filter(|x| x.get_rr_type() == RecordType::CNAME)
@@ -205,6 +206,9 @@ impl RecursiveResolver {
                 // Try to resolve anyways
             }
             unresolved_cnames.push(cnames[0]);
+            if !trust_cname_hinting {
+                break
+            }
             name = match *cnames[0].get_rdata() {
                 RData::CNAME(ref cname) => cname,
                 _ => panic!("Record type doesn't match RData"),

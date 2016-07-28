@@ -48,6 +48,9 @@ impl NsCacheEntry {
     pub fn to_addrs(&self) -> Vec<IpAddr> {
         self.nameservers.keys().cloned().collect()
     }
+    pub fn is_empty(&self) -> bool {
+        self.nameservers.is_empty()
+    }
     /// Prevent this entry from expiring
     pub fn pin(&mut self) {
         self.ttl = None;
@@ -135,7 +138,7 @@ impl NsCache {
         let mut cur = name.clone();
         loop {
             match guard.lookup(&cur) {
-                Some(x) if !x.is_expired() => {
+                Some(x) if !x.is_expired() && !x.is_empty() => {
                     debug!("Found NS for {} at {}", name, cur);
                     return x.to_addrs();
                 },

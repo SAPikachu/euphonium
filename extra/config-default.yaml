@@ -32,6 +32,7 @@ forwarders:
 
 query:
     timeout: 5 # Seconds
+    trust_cname_hinting: false
 
 control:
     sock_path: /tmp/euphonium.sock

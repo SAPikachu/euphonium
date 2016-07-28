@@ -101,6 +101,7 @@ pub struct ForwarderConfig {
 #[serde(deny_unknown_fields)]
 pub struct QueryConfig {
     pub timeout: ProxiedValue<u32, Duration>,
+    pub trust_cname_hinting: bool,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
