@@ -27,6 +27,7 @@ extern crate docopt;
 extern crate parking_lot;
 extern crate chrono;
 extern crate yaml_rust;
+extern crate openssl;
 
 pub mod utils;
 mod transport;
@@ -39,6 +40,7 @@ pub mod config;
 mod recursive;
 mod forwarding;
 mod control;
+mod validator;
 
 use std::net::{SocketAddr};
 

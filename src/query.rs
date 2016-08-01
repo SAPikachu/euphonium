@@ -10,6 +10,7 @@ use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future, AsDisplay};
 use utils::with_timeout::TcpStreamExt;
 use transport::{DnsTransport, DnsMsgTransport};
+use validator::{ResponseValidator, DummyValidator};
 
 pub const EDNS_VER: u8 = 0;
 pub const EDNS_MAX_PAYLOAD: u16 = 1200;
@@ -20,19 +21,26 @@ pub const EDNS_MAX_PAYLOAD: u16 = 1200;
 pub enum ErrorKind {
     InvalidId,
 }
+#[derive(Eq, PartialEq, Debug)]
+pub enum EdnsMode {
+    Disabled,
+    Enabled,
+    // Required,
+}
 
-fn query_core<T: DnsMsgTransport>(q: Query, mut transport: T, enable_edns: bool) -> Result<Message> {
+fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_mode: EdnsMode, validator: &mut TValidator) -> Result<Message> where TTransport: DnsMsgTransport, TValidator: ResponseValidator {
     let mut msg : Message = Message::new();
     msg.message_type(MessageType::Query);
     msg.id(rand::random());
     msg.op_code(OpCode::Query);
     msg.recursion_desired(true);
-    if enable_edns {
+    if edns_mode != EdnsMode::Disabled {
         let mut edns = Edns::new();
         edns.set_version(EDNS_VER);
-        edns.set_dnssec_ok(false); // TODO
+        edns.set_dnssec_ok(true);
         edns.set_max_payload(EDNS_MAX_PAYLOAD);
         msg.set_edns(edns);
+        msg.checking_disabled(true);
     }
     msg.add_query(q);
     debug!("[{}] {}", transport, msg.as_disp());
@@ -44,9 +52,18 @@ fn query_core<T: DnsMsgTransport>(q: Query, mut transport: T, enable_edns: bool)
                   transport, msg.get_id(), msg.as_disp(), resp);
             continue;
         }
-        if resp.get_response_code() == ResponseCode::FormErr && enable_edns {
+        if !validator.is_valid(&msg) {
+            warn!("[{}][{}] Rejected by validator for {}: {:?}",
+                  transport, msg.get_id(), msg.as_disp(), resp);
+            continue;
+        }
+        if resp.get_response_code() == ResponseCode::FormErr &&
+            edns_mode == EdnsMode::Enabled
+        {
             // Maybe the server doesn't implement EDNS?
-            return query_core(msg.get_queries()[0].clone(), transport, false);
+            return query_core(
+                msg.get_queries()[0].clone(), transport, EdnsMode::Disabled, validator,
+            );
         }
         debug!("[{}] {} -> {}", transport, resp.get_queries()[0].as_disp(), resp.as_disp());
         return Ok(resp);
@@ -59,9 +76,12 @@ fn get_bind_addr(target: &IpAddr) -> SocketAddr {
     }.parse().unwrap(), 0)
 }
 pub fn query(q: Query, addr: IpAddr, timeout: Duration) -> Result<Message> {
+    query_with_validator(q, addr, timeout, &mut DummyValidator)
+}
+pub fn query_with_validator<T: ResponseValidator>(q: Query, addr: IpAddr, timeout: Duration, validator: &mut T) -> Result<Message> {
     let target = SocketAddr::new(addr, 53);
     let mut transport = try!(UdpSocket::bound(&get_bind_addr(&addr))).with_timeout(timeout);
-    match query_core(q, transport.bound(Some(&target)), true) {
+    match query_core(q, transport.bound(Some(&target)), EdnsMode::Enabled, validator) {
         Ok(msg) => {
             if msg.is_truncated() {
                 // Try TCP
@@ -73,7 +93,8 @@ pub fn query(q: Query, addr: IpAddr, timeout: Duration) -> Result<Message> {
                 .and_then(|stream| query_core(
                     msg.get_queries()[0].clone(),
                     stream.with_timeout(timeout).bound(Some(&target)),
-                    true,
+                    EdnsMode::Enabled,
+                    validator,
                 ));
                 Ok(tcp_result.unwrap_or(msg))
             } else {
