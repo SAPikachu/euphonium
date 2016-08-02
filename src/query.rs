@@ -52,7 +52,7 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
                   transport, msg.get_id(), msg.as_disp(), resp);
             continue;
         }
-        if !validator.is_valid(&msg) {
+        if !validator.is_valid(&resp) {
             warn!("[{}][{}] Rejected by validator for {}: {:?}",
                   transport, msg.get_id(), msg.as_disp(), resp);
             continue;
