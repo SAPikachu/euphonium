@@ -8,7 +8,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, CloneExt, Future, AsDisplay};
+use utils::{Result, CloneExt, Future, AsDisplay, MessageExt};
 use query::{query_multiple_handle_futures, query as query_one};
 use cache::{Cache, RecordSource};
 use nscache::NsCache;
@@ -252,14 +252,7 @@ impl RecursiveResolver {
                     return Ok(msg);
                 }
                 Ok(next_msg) => {
-                    // Simpler way to clear all answers
-                    let mut new_msg = msg.truncate();
-                    assert!(new_msg.get_queries().is_empty());
-                    assert!(new_msg.get_answers().is_empty());
-                    assert!(new_msg.get_name_servers().is_empty());
-                    assert!(new_msg.get_additional().is_empty());
-                    new_msg.truncated(false);
-                    new_msg.add_query(self.state.query.clone());
+                    let mut new_msg = msg.without_rr();
                     unresolved_cnames.iter().cloned().foreach(|x| {
                         new_msg.add_answer(x);
                     });

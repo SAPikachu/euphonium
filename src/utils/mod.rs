@@ -81,6 +81,7 @@ pub trait MessageExt {
     fn copy_resp_from(&mut self, other: &Message);
     fn copy_resp_with<F>(&mut self, other: &Message, mut f: F)
         where F: FnMut(&Record) -> Record;
+    fn without_rr(&self) -> Message;
     fn is_resp_for(&self, other: &Message) -> bool;
 }
 impl MessageExt for Message {
@@ -123,6 +124,19 @@ impl MessageExt for Message {
         let mut ret = self.clone_resp();
         ret.add_query(q.clone());
         ret
+    }
+    fn without_rr(&self) -> Message {
+        // Simpler way to clear all answers
+        let mut new_msg = self.truncate();
+        assert!(new_msg.get_queries().is_empty());
+        assert!(new_msg.get_answers().is_empty());
+        assert!(new_msg.get_name_servers().is_empty());
+        assert!(new_msg.get_additional().is_empty());
+        new_msg.truncated(false);
+        new_msg.checking_disabled(self.is_checking_disabled());
+        new_msg.authentic_data(self.is_authentic_data());
+        self.get_queries().iter().foreach(|q| { new_msg.add_query(q.clone()); });
+        new_msg
     }
     fn copy_resp_from(&mut self, other: &Message) {
         self.copy_resp_with(other, Record::clone)
