@@ -9,11 +9,12 @@ use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
 use utils::{Result, CloneExt, Future, AsDisplay, MessageExt};
-use query::{query_multiple_handle_futures, query as query_one};
+use query::{query_multiple_handle_futures, query_with_validator};
 use cache::{Cache, RecordSource};
 use nscache::NsCache;
 use config::Config;
 use resolver::{ErrorKind, RcResolver};
+use validator::{DnssecValidator, SubqueryResolver};
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 struct QueryHash(Name, RecordType, DNSClass);
@@ -165,7 +166,12 @@ impl RecursiveResolver {
     }
     fn query_ns(self, ns: IpAddr) -> Result<Message> {
         try!(self.maybe_stop());
-        let result = try!(query_one(self.state.query.clone(), ns, *self.get_config().query.timeout));
+        let result = try!(query_with_validator(
+            self.state.query.clone(),
+            ns,
+            *self.get_config().query.timeout,
+            &mut DnssecValidator::new(&self),
+        ));
         try!(self.maybe_stop());
         if result.get_response_code() != ResponseCode::NoError {
             return Ok(result);
@@ -340,5 +346,10 @@ impl RecursiveResolver {
         let ret = try!(resolver.query());
         self.update_cache(&ret);
         Ok(ret)
+    }
+}
+impl<'a> SubqueryResolver for &'a RecursiveResolver {
+    fn resolve_sub(&self, q: Query) -> Result<Message> {
+        self.resolve_next(&q)
     }
 }

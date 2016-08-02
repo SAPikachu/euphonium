@@ -28,11 +28,19 @@ impl ResponseValidator for DummyValidator {
         true
     }
 }
-pub struct DnssecValidator {
-    resolver: RcResolver,
+pub trait SubqueryResolver {
+    fn resolve_sub(&self, q: Query) -> Result<Message>;
 }
-impl DnssecValidator {
-    pub fn new(resolver: RcResolver) -> Self {
+impl SubqueryResolver for RcResolver {
+    fn resolve_sub(&self, q: Query) -> Result<Message> {
+        RecursiveResolver::resolve(&q, self.clone())
+    }
+}
+pub struct DnssecValidator<T: SubqueryResolver> {
+    resolver: T,
+}
+impl<T: SubqueryResolver> DnssecValidator<T> {
+    pub fn new(resolver: T) -> Self {
         DnssecValidator {
             resolver: resolver,
         }
@@ -62,7 +70,7 @@ impl DnssecValidator {
                 q.name(signer_name.clone())
                 .query_class(rr_class)
                 .query_type(RecordType::DNSKEY);
-                let resp = try!(RecursiveResolver::resolve(&q, self.resolver.clone()));
+                let resp = try!(self.resolver.resolve_sub(q));
                 resp.get_answers().iter().filter_map(|rec| match *rec.get_rdata() {
                     RData::DNSKEY(ref dnskey) => Some(dnskey.clone()),
                     _ => None,
@@ -154,7 +162,7 @@ impl DnssecValidator {
         Ok(ValidationResult::Authenticated)
     }
 }
-impl ResponseValidator for DnssecValidator {
+impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {
     fn is_valid(&mut self, msg: &Message) -> bool {
         self.verify_rrsigs(msg).unwrap_or(ValidationResult::Bogus) != ValidationResult::Bogus
     }
