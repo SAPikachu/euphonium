@@ -53,8 +53,8 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
             continue;
         }
         if !validator.is_valid(&resp) {
-            warn!("[{}][{}] Rejected by validator for {}: {:?}",
-                  transport, msg.get_id(), msg.as_disp(), resp);
+            warn!("[{}][{}] Rejected by validator for {}: {}",
+                  transport, msg.get_id(), msg.as_disp(), resp.as_disp());
             continue;
         }
         if resp.get_response_code() == ResponseCode::FormErr &&

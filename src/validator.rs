@@ -47,12 +47,13 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
     }
     fn verify_rrsig(&self, rrset: &[Record], rrsigs: &[SIG]) -> Result<ValidationResult> {
         assert!(!rrset.is_empty());
-        if rrsigs.is_empty() {
-            return Ok(ValidationResult::Bogus);
-        }
-        let rr_type = rrsigs[0].get_type_covered();
         let rr_name = rrset[0].get_name();
         let rr_class = rrset[0].get_dns_class();
+        let rr_type = rrset[0].get_rr_type();
+        if rrsigs.is_empty() {
+            debug!("No RRSIG for {} {:?} {:?}", rr_name, rr_class, rr_type);
+            return Ok(ValidationResult::Bogus);
+        }
         debug_assert!(rrset.iter().all(|x| x.get_rr_type() == rr_type));
         debug_assert!(rrset.iter().all(|x| x.get_name() == rr_name));
         debug_assert!(rrsigs.iter().all(|x| x.get_type_covered() == rr_type));
@@ -110,10 +111,11 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 if signer.verify(&rrset_hash, sig.get_sig()) {
                     return Ok(ValidationResult::Authenticated);
                 } else {
-                    debug!("Failed to verify {} {:?} with {:?}", rr_name, rr_type, key);
+                    trace!("Failed to verify {} {:?} with {:?}", rr_name, rr_type, key);
                 }
             }
         }
+        debug!("No valid RRSIG for {} {:?} {:?}", rr_name, rr_class, rr_type);
         Ok(ValidationResult::Bogus)
     }
     // Largely stolen from trust-dns
@@ -125,6 +127,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
 
         if rrsigs.is_empty() {
             // TODO: Check whether this zone is really not signed
+            debug!("No Sig");
             return Ok(ValidationResult::NonAuthenticated);
         }
         // Group the record sets by name and type
@@ -153,6 +156,10 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 panic!("Unexpected RData: {:?}", rr)
             })
             .collect_vec();
+            if rr_type == RecordType::NS && rrsig.is_empty() {
+                // NS records are not signed
+                continue;
+            }
             if try!(self.verify_rrsig(&rrset, &rrsig)) != ValidationResult::Authenticated {
                 return Ok(ValidationResult::Bogus);
             }
