@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicIsize, Ordering, AtomicBool};
 
 use mioco::sync::Mutex;
+use mioco::sync::mpsc::{channel, Sender};
 use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
@@ -31,12 +32,20 @@ enum QueriedItem {
     NSDomain(Name),
     Query(QueryHash),
 }
+enum SubqueryState {
+    // Wraps a sender to send result when the query is completed. Intended for chained
+    // notification.
+    Pending(Option<Sender<Option<Message>>>),
+    Completed(Message),
+    Error,
+}
 struct RecursiveResolverState {
     queried_items: Mutex<HashSet<QueriedItem>>,
     query: Query,
     parent: RcResolver,
     query_limit: AtomicIsize,
     is_done: Arc<AtomicBool>,
+    subqueries: Arc<Mutex<HashMap<QueryHash, SubqueryState>>>,
 }
 impl RecursiveResolverState {
     fn new(q: &Query, parent: RcResolver) -> Self {
@@ -48,26 +57,32 @@ impl RecursiveResolverState {
             parent: parent,
             query_limit: AtomicIsize::new(256),
             is_done: Arc::default(),
+            subqueries: Arc::new(Mutex::new(Default::default())),
         }
     }
     fn new_inner(&self, q: &Query) -> Result<Self> {
-        let mut queried_items = HashSet::<QueriedItem>::new();
-        // Exclude NS and NSDomain, since we are querying a different domain
-        queried_items.extend(
-            self.queried_items.lock().unwrap().iter()
-            .filter(|x| if let QueriedItem::NS(_) = **x { false } else { true })
-            .filter(|x| if let QueriedItem::NSDomain(_) = **x { false } else { true })
-            .map(|x| (*x).clone())
-        );
-        if !queried_items.insert(QueriedItem::Query(q.into())) {
-            return Err(ErrorKind::AlreadyQueried.into());
-        }
+        let queried_items = {
+            let mut guard = self.queried_items.lock().unwrap();
+            if !guard.insert(QueriedItem::Query(q.into())) {
+                return Err(ErrorKind::AlreadyQueried.into());
+            }
+            let mut items = HashSet::<QueriedItem>::new();
+            // Exclude NS and NSDomain, since we are querying a different domain
+            items.extend(
+                guard.iter()
+                .filter(|x| if let QueriedItem::NS(_) = **x { false } else { true })
+                .filter(|x| if let QueriedItem::NSDomain(_) = **x { false } else { true })
+                .map(|x| (*x).clone())
+            );
+            items
+        };
         Ok(RecursiveResolverState {
             queried_items: Mutex::new(queried_items),
             query: q.clone(),
             parent: self.parent.clone(),
             query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
             is_done: self.is_done.clone(),
+            subqueries: self.subqueries.clone(),
         })
     }
 }
@@ -337,9 +352,67 @@ impl RecursiveResolver {
         Ok(ret)
     }
     fn resolve_next(&self, q: &Query) -> Result<Message> {
+        use std::collections::hash_map::Entry::{Occupied, Vacant};
+        use ::recursive::SubqueryState::{Pending, Completed, Error};
         if let Some(msg) = self.get_cache().lookup(q, |m| m.create_response()) {
             return Ok(msg);
         }
+        let (send, recv) = {
+            use std::mem;
+            match self.state.subqueries.lock().unwrap().entry(q.into()) {
+                Vacant(e) => {
+                    e.insert(Pending(None));
+                    (None, None)
+                },
+                Occupied(mut e) => {
+                    match *e.get_mut() {
+                        Completed(ref msg) => return Ok(msg.clone()),
+                        Error => return Err(ErrorKind::AlreadyQueried.into()),
+                        Pending(ref mut stored_sender) => {
+                            let (send, recv) = channel::<Option<Message>>();
+                            let mut send_opt = Some(send);
+                            mem::swap(stored_sender, &mut send_opt);
+                            (send_opt, Some(recv))
+                        }
+                    }
+                },
+            }
+        };
+        match recv {
+            Some(ref r) => {
+                let ret = r.recv();
+                let result = match ret {
+                    Ok(Some(msg)) => Ok(msg),
+                    Ok(None) => Err(ErrorKind::AlreadyQueried.into()),
+                    Err(e) => Err(e.into()),
+                };
+                if let Some(ref s) = send {
+                    s.send(result.as_ref().map(|x| x.clone()).ok()).is_ok();
+                }
+                result
+            },
+            None => {
+                assert!(send.is_none());
+                let ret = self.resolve_next_impl(q);
+                match self.state.subqueries.lock().unwrap().entry(q.into()) {
+                    Vacant(_) => {
+                        panic!("Who changed this to Vacant again?");
+                    },
+                    Occupied(mut e) => {
+                        if let Pending(Some(ref sender)) = *e.get() {
+                            sender.send(ret.as_ref().map(|x| x.clone()).ok()).is_ok();
+                        }
+                        e.insert(match ret {
+                            Ok(ref msg) => Completed(msg.clone()),
+                            Err(_) => Error,
+                        })
+                    },
+                };
+                ret
+            },
+        }
+    }
+    fn resolve_next_impl(&self, q: &Query) -> Result<Message> {
         let resolver = RecursiveResolver {
             state: Arc::new(try!(self.state.new_inner(q))),
         };

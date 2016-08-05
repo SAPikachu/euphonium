@@ -76,6 +76,7 @@ pub trait MessageExt {
     fn from_bytes(buf: &[u8]) -> Result<Message>;
     fn from_udp(sock: &mut UdpSocket) -> Result<(Message, SocketAddr)>;
     fn new_resp(&self) -> Message;
+    fn clone(&self) -> Message;
     fn clone_resp(&self) -> Message;
     fn clone_resp_for(&self, q: &Query) -> Message;
     fn copy_resp_from(&mut self, other: &Message);
@@ -113,6 +114,11 @@ impl MessageExt for Message {
         for q in self.get_queries() {
             ret.add_query(q.clone());
         }
+        ret
+    }
+    fn clone(&self) -> Message {
+        let mut ret = self.without_rr();
+        ret.copy_resp_from(self);
         ret
     }
     fn clone_resp(&self) -> Message {
