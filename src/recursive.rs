@@ -101,16 +101,19 @@ impl RecursiveResolver {
         &self.state.parent.config
     }
     fn query(&self) -> Result<Message> {
-        let is_ds = self.state.query.get_query_type() == RecordType::DS;
+        let name = self.state.query.get_name();
+        let is_ds = self.state.query.get_query_type() == RecordType::DS && !name.is_root();
         let nscache = self.get_ns_cache();
         let ns = if is_ds {
-            nscache.lookup_recursive_with_filter(self.state.query.get_name(), |ent| {
+            // Start from the first ancestor zone that is known to serve DS response, which
+            // ensures not to be the same zone as `name`
+            nscache.lookup_recursive_with_filter(&name.base_name(), |ent| {
                 let mut q = self.state.query.clone();
                 q.name(ent.get_zone().clone());
                 self.get_cache().lookup(&q, |_| ()).is_some()
             })
         } else {
-            nscache.lookup_recursive(self.state.query.get_name())
+            nscache.lookup_recursive(name)
         };
         self.query_ns_multiple(ns, None)
     }
