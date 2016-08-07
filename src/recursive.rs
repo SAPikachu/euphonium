@@ -9,7 +9,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, CloneExt, Future, AsDisplay, MessageExt, ROOT_NAME};
+use utils::{Result, CloneExt, Future, AsDisplay, MessageExt};
 use query::{query_multiple_handle_futures, query_with_validator};
 use cache::{Cache, RecordSource};
 use nscache::NsCache;
@@ -102,11 +102,16 @@ impl RecursiveResolver {
     }
     fn query(&self) -> Result<Message> {
         let is_ds = self.state.query.get_query_type() == RecordType::DS;
-        let ns = self.get_ns_cache().lookup_recursive(if is_ds {
-            &ROOT_NAME
+        let nscache = self.get_ns_cache();
+        let ns = if is_ds {
+            nscache.lookup_recursive_with_filter(self.state.query.get_name(), |ent| {
+                let mut q = self.state.query.clone();
+                q.name(ent.get_zone().clone());
+                self.get_cache().lookup(&q, |_| ()).is_some()
+            })
         } else {
-            self.state.query.get_name()
-        });
+            nscache.lookup_recursive(self.state.query.get_name())
+        };
         self.query_ns_multiple(ns, None)
     }
     fn query_ns_domain(&self, auth_zone: &Name, ns: &Name) -> Result<Message> {

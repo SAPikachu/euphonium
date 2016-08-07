@@ -78,6 +78,9 @@ impl NsCacheEntry {
             Some(ttl) => self.timestamp + Duration::from_secs(ttl) <= SystemTime::now(),
         }
     }
+    pub fn get_zone(&self) -> &Name {
+        &self.zone
+    }
 }
 #[cfg_attr(test, derive(Default))]
 pub struct NsCachePlain {
@@ -134,13 +137,18 @@ impl NsCache {
         }
     }
     pub fn lookup_recursive(&self, name: &Name) -> Vec<IpAddr> {
+        self.lookup_recursive_with_filter(name, |_| true)
+    }
+    pub fn lookup_recursive_with_filter<F>(&self, name: &Name, predicate: F) -> Vec<IpAddr> where F: Fn(&NsCacheEntry) -> bool {
         let guard = self.lock().unwrap();
         let mut cur = name.clone();
         loop {
             match guard.lookup(&cur) {
                 Some(x) if !x.is_expired() && !x.is_empty() => {
                     debug!("Found NS for {} at {}", name, cur);
-                    return x.to_addrs();
+                    if cur.is_root() || predicate(x) {
+                        return x.to_addrs();
+                    }
                 },
                 Some(_) => {
                     debug!("NS for {} at {} is expired", name, cur);
