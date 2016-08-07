@@ -6,13 +6,18 @@ use std::time::{UNIX_EPOCH, Duration};
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 use trust_dns::rr::{DNSClass, RecordType, Record, RData, Name};
 use trust_dns::rr::rdata::sig::SIG;
-use trust_dns::rr::dnssec::Signer;
+use trust_dns::rr::dnssec::{Signer, TrustAnchor};
+use trust_dns::serialize::binary::{BinEncoder, BinSerializable};
 use openssl::crypto::pkey::Role;
 use itertools::Itertools;
 
 use resolver::RcResolver;
 use utils::Result;
 use recursive::RecursiveResolver;
+
+lazy_static! {
+    static ref TRUST_ANCHOR: TrustAnchor = TrustAnchor::default();
+}
 
 #[derive(Eq, PartialEq, Debug)]
 enum ValidationResult {
@@ -64,6 +69,40 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         };
         cur_time < expiration
     }
+    fn verify_ds(&self, dnskey: &Record) -> Result<bool> {
+        let (public_key, algorithm) = if let RData::DNSKEY(ref rdata) = *dnskey.get_rdata() {
+            (rdata.get_public_key(), rdata.get_algorithm())
+        } else {
+            panic!("Invalid record type")
+        };
+        if TRUST_ANCHOR.contains(public_key) {
+            return Ok(true);
+        }
+        let name = dnskey.get_name();
+        if name.is_root() {
+            // Avoid infinite loop
+            return Ok(false);
+        }
+        let mut q = Query::new();
+        q.name(dnskey.get_name().clone());
+        q.query_type(RecordType::DS);
+        q.query_class(dnskey.get_dns_class());
+        let ds_resp = try!(self.resolver.resolve_sub(q));
+        let mut buf = Vec::<u8>::new();
+        {
+            let mut encoder = BinEncoder::new(&mut buf);
+            encoder.set_canonical_names(true);
+            try!(dnskey.get_name().emit(&mut encoder));
+            try!(dnskey.get_rdata().emit(&mut encoder));
+        }
+        Ok(ds_resp.get_answers().iter().any(|x| match *x.get_rdata() {
+            RData::DS(ref ds) if ds.get_algorithm() == algorithm => {
+                let hash = ds.get_digest_type().hash(&buf);
+                hash == ds.get_digest()
+            },
+            _ => false,
+        }))
+    }
     fn verify_rrsig(&self, rrset: &[Record], rrsigs: &[SIG]) -> Result<ValidationResult> {
         assert!(!rrset.is_empty());
         let rr_name = rrset[0].get_name();
@@ -96,8 +135,9 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 continue;
             }
             let dnskeys = if rr_type == RecordType::DNSKEY && signer_name == rr_name {
-                // TODO: Self-signed, verify DS
-                rrset.iter().map(|rec| if let RData::DNSKEY(ref dnskey) = *rec.get_rdata() {
+                rrset.iter()
+                .filter(|rec| self.verify_ds(rec).unwrap_or(false))
+                .map(|rec| if let RData::DNSKEY(ref dnskey) = *rec.get_rdata() {
                     dnskey.clone()
                 } else {
                     panic!("Invalid record type")
