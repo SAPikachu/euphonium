@@ -51,7 +51,11 @@ pub trait DnsMsgTransport: Display {
 impl<'a, T> DnsMsgTransport for BoundDnsTransport<'a, T> where T: DnsTransport + 'a {
     fn recv_msg(&mut self) -> Result<Message> {
         let (msg, addr) = try!(self.transport.recv_msg(self.addr));
-        debug_assert!(addr.as_ref() == self.addr || self.addr.is_none());
+        debug_assert!(
+            addr.as_ref() == self.addr || self.addr.is_none() || addr.is_none(),
+            "recv_msg address mismatch: {}, expected: {:?}, got: {:?}",
+            self, self.addr, addr,
+        );
         Ok(msg)
     }
     fn send_msg(&mut self, msg: &Message) -> Result<()> {
