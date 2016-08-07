@@ -1,6 +1,7 @@
 #![cfg_attr(debug_assertions, allow(unused_imports, dead_code))]
 
 use std::collections::HashSet;
+use std::time::{UNIX_EPOCH, Duration};
 
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 use trust_dns::rr::{DNSClass, RecordType, Record, RData, Name};
@@ -45,6 +46,24 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             resolver: resolver,
         }
     }
+    fn verify_sig_time(sig: &SIG) -> bool {
+        let mut cur_time = UNIX_EPOCH.elapsed()
+        .unwrap_or(Duration::new(0, 0)).as_secs() as u64;
+        cur_time &= 0xffff_ffff;
+        let inception = sig.get_sig_inception() as u64;
+        if cur_time < inception {
+            cur_time += 0x1_0000_0000;
+        }
+        let expiration = {
+            let t = sig.get_sig_expiration() as u64;
+            if t < inception {
+                t + 0x1_0000_0000
+            } else {
+                t
+            }
+        };
+        cur_time < expiration
+    }
     fn verify_rrsig(&self, rrset: &[Record], rrsigs: &[SIG]) -> Result<ValidationResult> {
         assert!(!rrset.is_empty());
         let rr_name = rrset[0].get_name();
@@ -58,7 +77,24 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         debug_assert!(rrset.iter().all(|x| x.get_name() == rr_name));
         debug_assert!(rrsigs.iter().all(|x| x.get_type_covered() == rr_type));
         for sig in rrsigs {
+            if !Self::verify_sig_time(sig) {
+                debug!("Not in validity time ({} -> {}).",
+                       sig.get_sig_inception(), sig.get_sig_expiration());
+                continue;
+            }
             let signer_name = sig.get_signer_name();
+            // The number of labels in the RRset owner name MUST be greater than
+            // or equal to the value in the RRSIG RR's Labels field.
+            if rr_name.num_labels() < sig.get_num_labels() {
+                debug!("Number of labels: name = {} ({}), sig = {}",
+                       rr_name.num_labels(), rr_name, sig.get_num_labels());
+                continue;
+            }
+            if !signer_name.zone_of(rr_name) {
+                debug!("Signer's name ({}) is not zone of RRset owner name ({})",
+                       signer_name, rr_name);
+                continue;
+            }
             let dnskeys = if rr_type == RecordType::DNSKEY && signer_name == rr_name {
                 // TODO: Self-signed, verify DS
                 rrset.iter().map(|rec| if let RData::DNSKEY(ref dnskey) = *rec.get_rdata() {
@@ -156,8 +192,8 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 panic!("Unexpected RData: {:?}", rr)
             })
             .collect_vec();
-            if rr_type == RecordType::NS && rrsig.is_empty() {
-                // NS records are not signed
+            if rr_type == RecordType::NS && rrsig.is_empty() && msg.get_answers().is_empty() {
+                // NS records are not signed in referral
                 continue;
             }
             if try!(self.verify_rrsig(&rrset, &rrsig)) != ValidationResult::Authenticated {
