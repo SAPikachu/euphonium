@@ -31,6 +31,7 @@ treebitmap = "^0.2"
 trust-dns = "^0.6.*"
 yaml-rust = "^0.3.3"
 openssl = "^0.7.14"
+lazy_static = "*"
 
 [dependencies.clippy]
 optional = true

@@ -48,7 +48,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
     }
     fn verify_sig_time(sig: &SIG) -> bool {
         let mut cur_time = UNIX_EPOCH.elapsed()
-        .unwrap_or(Duration::new(0, 0)).as_secs() as u64;
+        .unwrap_or_else(|_| Duration::new(0, 0)).as_secs() as u64;
         cur_time &= 0xffff_ffff;
         let inception = sig.get_sig_inception() as u64;
         if cur_time < inception {

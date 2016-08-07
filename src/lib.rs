@@ -28,6 +28,7 @@ extern crate parking_lot;
 extern crate chrono;
 extern crate yaml_rust;
 extern crate openssl;
+#[macro_use] extern crate lazy_static;
 
 pub mod utils;
 mod transport;

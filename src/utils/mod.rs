@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use mioco::udp::UdpSocket;
 use trust_dns::op::{Message, Query, MessageType};
 use trust_dns::error::{DecodeError, EncodeError};
-use trust_dns::rr::{RecordType, Record};
+use trust_dns::rr::{RecordType, Record, Name};
 use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
 use itertools::Itertools;
 
@@ -24,6 +24,10 @@ pub use self::future::Future;
 pub use self::as_disp::AsDisplay;
 pub use self::ipset::IpSet;
 pub use self::jsonrpc::{JsonRpcRequest, JsonRpcResponse};
+
+lazy_static! {
+    pub static ref ROOT_NAME: Name = Name::root();
+}
 
 quick_error! {
     #[derive(Debug)]
