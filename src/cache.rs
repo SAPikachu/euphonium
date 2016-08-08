@@ -162,6 +162,11 @@ impl RecordEntry {
             new_rec
         });
     }
+    pub fn is_authenticated(&self) -> bool {
+        self.message.get_answers().iter()
+        .chain(self.message.get_name_servers())
+        .any(|rec| rec.get_rr_type() == RecordType::RRSIG)
+    }
     pub fn adjust_ttl(&self, rec: &mut Record) {
         match self.ttl {
             TtlMode::Original => {},

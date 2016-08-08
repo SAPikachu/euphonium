@@ -110,7 +110,7 @@ impl RecursiveResolver {
             nscache.lookup_recursive_with_filter(&name.base_name(), |ent| {
                 let mut q = self.state.query.clone();
                 q.name(ent.get_zone().clone());
-                self.get_cache().lookup(&q, |_| ()).is_some()
+                self.get_cache().lookup(&q, |ent| ent.is_authenticated()).unwrap_or(false)
             })
         } else {
             nscache.lookup_recursive(name)
