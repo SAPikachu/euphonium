@@ -21,6 +21,7 @@ pub const EDNS_MAX_PAYLOAD: u16 = 1200;
 pub enum ErrorKind {
     InvalidId,
     TruncatedBogus(Message),
+    ValidationFailure(Message),
 }
 #[derive(Eq, PartialEq, Debug)]
 pub enum EdnsMode {
@@ -46,8 +47,24 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
     msg.add_query(q);
     debug!("[{}] {}", transport, msg.as_disp());
     try!(transport.send_msg(&msg));
+    let mut last_bogus_msg: Option<Message> = None;
     loop {
-        let resp = try!(transport.recv_msg());
+        let resp = try!(match transport.recv_msg() {
+            Ok(x) => Ok(x),
+            Err(e) => Err(match e {
+                Error::Io(e) => {
+                    match e.kind() {
+                        io::ErrorKind::TimedOut if last_bogus_msg.is_some() => {
+                            ErrorKind::ValidationFailure(
+                                last_bogus_msg.take().unwrap()
+                            ).into()
+                        },
+                        _ => Error::Io(e),
+                    }
+                },
+                _ => e,
+            }),
+        });
         if ! resp.is_resp_for(&msg) {
             warn!("[{}][{}] Invalid response for {}: {:?}",
                   transport, msg.get_id(), msg.as_disp(), resp);
@@ -59,6 +76,7 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
             }
             warn!("[{}][{}] Rejected by validator for {}: {}",
                   transport, msg.get_id(), msg.as_disp(), resp.as_disp());
+            last_bogus_msg = Some(resp);
             continue;
         }
         if resp.get_response_code() == ResponseCode::FormErr &&
