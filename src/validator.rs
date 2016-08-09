@@ -127,6 +127,27 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             *key.get_algorithm(), pkey, signer_name.clone(),
         ))
     }
+    fn calculate_dnskey_tag(key: &DNSKEY) -> u16 {
+        let mut buf = Vec::<u8>::new();
+        {
+            let mut encoder = BinEncoder::new(&mut buf);
+            encoder.set_canonical_names(true);
+            RData::DNSKEY(key.clone()).emit(&mut encoder).unwrap();
+        }
+        // Copied from trust-dns
+        let mut ac: usize = 0;
+
+        for (i,k) in buf.iter().enumerate() {
+            ac += if i & 0x0001 == 0x0001 {
+                *k as usize
+            } else {
+                (*k as usize) << 8
+            };
+        }
+
+        ac += (ac >> 16 ) & 0xFFFF;
+        (ac & 0xFFFF) as u16
+    }
     fn verify_rrsig(&self, rrset: &[Record], rrsigs: &[SIG]) -> Result<ValidationResult> {
         assert!(!rrset.is_empty());
         let rr_name = rrset[0].get_name();
@@ -192,9 +213,14 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                     sig.get_key_tag(), signer_name, rrset,
                 );
                 if signer.verify(&rrset_hash, sig.get_sig()) {
+                    trace!("Verified {} {:?} with {:?} (signer: {})",
+                           rr_name, rr_type, key.get_algorithm(), signer_name);
                     return Ok(ValidationResult::Authenticated);
                 } else {
-                    trace!("Failed to verify {} {:?} with {:?}", rr_name, rr_type, key);
+                    debug!("Failed to verify {} {:?} ({}) with ({:?}, {}, {}) (signer: {})",
+                           rr_name, rr_type, rrset.len(),
+                           key.get_algorithm(), sig.get_key_tag(),
+                           Self::calculate_dnskey_tag(&key), signer_name);
                 }
             }
         }
