@@ -62,6 +62,10 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
                         _ => Error::Io(e),
                     }
                 },
+                Error::Decode(e) => {
+                    warn!("Failed to decode message: {:?}", e);
+                    continue
+                },
                 _ => e,
             }),
         });
