@@ -17,9 +17,10 @@ pub const EDNS_MAX_PAYLOAD: u16 = 1200;
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ErrorKind {
     InvalidId,
+    TruncatedBogus(Message),
 }
 #[derive(Eq, PartialEq, Debug)]
 pub enum EdnsMode {
@@ -53,6 +54,9 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
             continue;
         }
         if !validator.is_valid(&resp) {
+            if resp.is_truncated() {
+                return Err(ErrorKind::TruncatedBogus(msg).into());
+            }
             warn!("[{}][{}] Rejected by validator for {}: {}",
                   transport, msg.get_id(), msg.as_disp(), resp.as_disp());
             continue;
@@ -81,25 +85,32 @@ pub fn query(q: Query, addr: IpAddr, timeout: Duration) -> Result<Message> {
 pub fn query_with_validator<T: ResponseValidator>(q: Query, addr: IpAddr, timeout: Duration, validator: &mut T) -> Result<Message> {
     let target = SocketAddr::new(addr, 53);
     let mut transport = try!(UdpSocket::bound(&get_bind_addr(&addr))).with_timeout(timeout);
+    macro_rules! query_tcp {
+        ($q: expr) => {{
+            TcpStream::connect_with_timeout(&target, timeout)
+            .map_err(|e| e.into())
+            .and_then(|stream| stream.set_nodelay(true)
+                                     .or_else(|_| Ok(()))
+                                     .map(|_| stream))
+            .and_then(|stream| query_core(
+                $q.clone(),
+                stream.with_timeout(timeout).bound(Some(&target)),
+                EdnsMode::Enabled,
+                validator,
+            ))
+        }}
+    };
     match query_core(q, transport.bound(Some(&target)), EdnsMode::Enabled, validator) {
         Ok(msg) => {
             if msg.is_truncated() {
                 // Try TCP
-                let tcp_result = TcpStream::connect_with_timeout(&target, timeout)
-                .map_err(|e| e.into())
-                .and_then(|stream| stream.set_nodelay(true)
-                                         .or_else(|_| Ok(()))
-                                         .map(|_| stream))
-                .and_then(|stream| query_core(
-                    msg.get_queries()[0].clone(),
-                    stream.with_timeout(timeout).bound(Some(&target)),
-                    EdnsMode::Enabled,
-                    validator,
-                ));
-                Ok(tcp_result.unwrap_or(msg))
+                Ok(query_tcp!(&msg.get_queries()[0]).unwrap_or(msg))
             } else {
                 Ok(msg)
             }
+        },
+        Err(Error::Query(ErrorKind::TruncatedBogus(msg))) => {
+            query_tcp!(&msg.get_queries()[0])
         },
         Err(e) => Err(e),
     }
