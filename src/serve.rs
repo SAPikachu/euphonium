@@ -76,7 +76,10 @@ fn handle_request(resolver: RcResolver, msg: Message, should_truncate: bool) -> 
             filtered
         };
     } else {
-        ret.authentic_data(true);
+        let is_authenticated = ret.get_answers().iter()
+        .chain(ret.get_name_servers())
+        .any(|rec| rec.get_rr_type() == RecordType::RRSIG);
+        ret.authentic_data(is_authenticated);
     }
     let bytes = try!(ret.to_bytes());
     if should_truncate && bytes.len() > (msg.get_max_payload() as usize) {
