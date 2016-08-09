@@ -7,8 +7,7 @@ use mioco::udp::UdpSocket;
 use mioco::tcp::{TcpListener};
 use mioco::sync::mpsc::{channel};
 use trust_dns::op::{Message, ResponseCode, Edns, OpCode};
-use trust_dns::rr::{DNSClass, RecordType, Record};
-use itertools::Itertools;
+use trust_dns::rr::{DNSClass, RecordType};
 
 use utils::{Result, Error, MessageExt, WithTimeout};
 use transport::{DnsTransport};
@@ -50,31 +49,7 @@ fn handle_request(resolver: RcResolver, msg: Message, should_truncate: bool) -> 
         },
     };
     if !have_dnssec {
-        ret = {
-            let mut filtered = ret.without_rr();
-            const REMOVED_TYPES: [RecordType; 8] = [
-                RecordType::RRSIG,
-                RecordType::NSEC,
-                RecordType::NSEC3,
-                RecordType::DS,
-                RecordType::DNSKEY,
-                RecordType::KEY,
-                RecordType::NSEC3PARAM,
-                RecordType::OPT,
-            ];
-            let query_type = ret.get_queries()[0].get_query_type();
-            let f = |r: &&Record| -> bool {
-                let t = r.get_rr_type();
-                t == query_type || !REMOVED_TYPES.contains(&t)
-            };
-            ret.get_answers().iter().filter(&f)
-            .foreach(|r| { filtered.add_answer(r.clone()); });
-            ret.get_name_servers().iter().filter(&f)
-            .foreach(|r| { filtered.add_name_server(r.clone()); });
-            ret.get_additional().iter().filter(&f)
-            .foreach(|r| { filtered.add_additional(r.clone()); });
-            filtered
-        };
+        ret = ret.strip_dnssec_records();
     } else {
         let is_authenticated = ret.get_answers().iter()
         .chain(ret.get_name_servers())

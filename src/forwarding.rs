@@ -37,6 +37,8 @@ impl ForwardingResolver {
                 return Err(ErrorKind::RejectedIp.into());
             }
         }
+        // Treat all messages from forwarder as non-authenticated
+        let msg = msg.strip_dnssec_records();
         parent.cache.update_from_message(&msg, RecordSource::Forwarder);
         // Set TTL to 1 second so that clients can come back and fetch better result
         let mut ret = Message::new();

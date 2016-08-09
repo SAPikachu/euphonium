@@ -79,6 +79,7 @@ pub trait MessageExt {
     fn to_bytes(&self) -> Result<Vec<u8>>;
     fn from_bytes(buf: &[u8]) -> Result<Message>;
     fn from_udp(sock: &mut UdpSocket) -> Result<(Message, SocketAddr)>;
+    fn strip_dnssec_records(&self) -> Message;
     fn new_resp(&self) -> Message;
     fn clone(&self) -> Message;
     fn clone_resp(&self) -> Message;
@@ -108,6 +109,31 @@ impl MessageExt for Message {
         let (l, addr) = try!(sock.recv(&mut buf));
         let msg = try!(Message::from_bytes(&buf[0..l]));
         Ok((msg, addr))
+    }
+    fn strip_dnssec_records(&self) -> Message {
+        let mut filtered = self.without_rr();
+        const REMOVED_TYPES: [RecordType; 8] = [
+            RecordType::RRSIG,
+            RecordType::NSEC,
+            RecordType::NSEC3,
+            RecordType::DS,
+            RecordType::DNSKEY,
+            RecordType::KEY,
+            RecordType::NSEC3PARAM,
+            RecordType::OPT,
+        ];
+        let query_type = self.get_queries()[0].get_query_type();
+        let f = |r: &&Record| -> bool {
+            let t = r.get_rr_type();
+            t == query_type || !REMOVED_TYPES.contains(&t)
+        };
+        self.get_answers().iter().filter(&f)
+        .foreach(|r| { filtered.add_answer(r.clone()); });
+        self.get_name_servers().iter().filter(&f)
+        .foreach(|r| { filtered.add_name_server(r.clone()); });
+        self.get_additional().iter().filter(&f)
+        .foreach(|r| { filtered.add_additional(r.clone()); });
+        filtered
     }
     fn new_resp(&self) -> Message {
         let mut ret : Message = Message::new();
