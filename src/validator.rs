@@ -5,7 +5,7 @@ use std::time::{UNIX_EPOCH, Duration};
 
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 use trust_dns::rr::{DNSClass, RecordType, Record, RData, Name};
-use trust_dns::rr::rdata::sig::SIG;
+use trust_dns::rr::rdata::{SIG, DNSKEY};
 use trust_dns::rr::dnssec::{Signer, TrustAnchor};
 use trust_dns::serialize::binary::{BinEncoder, BinSerializable};
 use openssl::crypto::pkey::Role;
@@ -103,6 +103,30 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             _ => false,
         }))
     }
+    fn create_verifier(key: &DNSKEY, signer_name: &Name) -> Option<Signer> {
+        if key.is_revoke() {
+            debug!("DNSKEY is revoked: {:?}", key);
+            return None;
+        }
+        if !key.is_zone_key() {
+            return None;
+        }
+        let pkey = key.get_algorithm().public_key_from_vec(key.get_public_key());
+        let pkey = match pkey {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("Failed to get public key from DNSKEY: {:?}", e);
+                return None
+            },
+        };
+        if !pkey.can(Role::Verify) {
+            debug!("PKey can't be used to verify: {:?}", key);
+            return None;
+        }
+        Some(Signer::new_verifier(
+            *key.get_algorithm(), pkey, signer_name.clone(),
+        ))
+    }
     fn verify_rrsig(&self, rrset: &[Record], rrsigs: &[SIG]) -> Result<ValidationResult> {
         assert!(!rrset.is_empty());
         let rr_name = rrset[0].get_name();
@@ -154,30 +178,13 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 }).collect_vec()
             };
             for key in dnskeys {
-                if key.is_revoke() {
-                    debug!("DNSKEY is revoked: {:?}", key);
-                    continue;
-                }
-                if !key.is_zone_key() {
-                    continue;
-                }
                 if *key.get_algorithm() != sig.get_algorithm() {
                     continue;
                 }
-                let pkey = key.get_algorithm().public_key_from_vec(key.get_public_key());
-                let pkey = match pkey {
-                    Ok(k) => k,
-                    Err(e) => {
-                        warn!("Failed to get public key from DNSKEY: {:?}", e);
-                        continue
-                    },
+                let signer = match Self::create_verifier(&key, signer_name) {
+                    Some(x) => x,
+                    None => continue,
                 };
-                if !pkey.can(Role::Verify) {
-                    debug!("PKey can't be used to verify: {:?}", key);
-                }
-                let signer = Signer::new_verifier(
-                    *key.get_algorithm(), pkey, signer_name.clone(),
-                );
                 let rrset_hash: Vec<u8> = signer.hash_rrset(
                     rr_name, rr_class,
                     sig.get_num_labels(), sig.get_type_covered(), sig.get_algorithm(),
