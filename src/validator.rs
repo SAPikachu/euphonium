@@ -148,6 +148,26 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         ac += (ac >> 16 ) & 0xFFFF;
         (ac & 0xFFFF) as u16
     }
+    fn get_delegated_dnskeys(&self, rrset: &[Record]) -> Vec<DNSKEY> {
+        rrset.iter()
+        .filter(|rec| self.verify_ds(rec).unwrap_or(false))
+        .map(|rec| if let RData::DNSKEY(ref dnskey) = *rec.get_rdata() {
+            dnskey.clone()
+        } else {
+            panic!("Invalid record type")
+        }).collect_vec()
+    }
+    fn query_dnskey(&self, signer_name: &Name, rr_class: DNSClass) -> Result<Vec<DNSKEY>> {
+        let mut q = Query::new();
+        q.name(signer_name.clone())
+        .query_class(rr_class)
+        .query_type(RecordType::DNSKEY);
+        let resp = try!(self.resolver.resolve_sub(q));
+        Ok(resp.get_answers().iter().filter_map(|rec| match *rec.get_rdata() {
+            RData::DNSKEY(ref dnskey) => Some(dnskey.clone()),
+            _ => None,
+        }).collect_vec())
+    }
     fn verify_rrsig(&self, rrset: &[Record], rrsigs: &[SIG]) -> Result<ValidationResult> {
         assert!(!rrset.is_empty());
         let rr_name = rrset[0].get_name();
@@ -180,23 +200,9 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 continue;
             }
             let dnskeys = if rr_type == RecordType::DNSKEY && signer_name == rr_name {
-                rrset.iter()
-                .filter(|rec| self.verify_ds(rec).unwrap_or(false))
-                .map(|rec| if let RData::DNSKEY(ref dnskey) = *rec.get_rdata() {
-                    dnskey.clone()
-                } else {
-                    panic!("Invalid record type")
-                }).collect_vec()
+                self.get_delegated_dnskeys(rrset)
             } else {
-                let mut q = Query::new();
-                q.name(signer_name.clone())
-                .query_class(rr_class)
-                .query_type(RecordType::DNSKEY);
-                let resp = try!(self.resolver.resolve_sub(q));
-                resp.get_answers().iter().filter_map(|rec| match *rec.get_rdata() {
-                    RData::DNSKEY(ref dnskey) => Some(dnskey.clone()),
-                    _ => None,
-                }).collect_vec()
+                try!(self.query_dnskey(signer_name, rr_class))
             };
             for key in dnskeys {
                 if *key.get_algorithm() != sig.get_algorithm() {
