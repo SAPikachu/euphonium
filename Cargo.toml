@@ -32,6 +32,7 @@ trust-dns = "^0.7.1"
 yaml-rust = "^0.3.3"
 openssl = "^0.7.14"
 lazy_static = "*"
+timebomb = { git = "https://github.com/SAPikachu/timebomb.git" }
 
 [dependencies.clippy]
 optional = true

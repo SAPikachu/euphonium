@@ -29,6 +29,7 @@ extern crate chrono;
 extern crate yaml_rust;
 extern crate openssl;
 #[macro_use] extern crate lazy_static;
+extern crate timebomb;
 
 pub mod utils;
 mod transport;
@@ -78,8 +79,14 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
           F: Send + 'static,
           T: Send + 'static
 {
-    let config = Config::default();
-    mioco_config_start_ex(config.internal.threads, config.internal.mio_notify_capacity, f)
+    timebomb::timeout_ms(|| {
+        let config = Config::default();
+        mioco_config_start_ex(
+            config.internal.threads,
+            config.internal.mio_notify_capacity,
+            f,
+        )
+    }, 30000)
 }
 pub fn main() {
     env_logger::init().expect("What the ...?");

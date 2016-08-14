@@ -153,23 +153,23 @@ mod tests {
     fn connect_with_timeout_success() {
         mioco_config_start(|| {
             let target = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53);
-            TcpStream::connect_with_timeout(&target, 5000).unwrap();
-        }).unwrap();
+            TcpStream::connect_with_timeout(&target, 5000)
+        }).unwrap().unwrap();
     }
     #[test]
     #[should_panic(expected = "refused")]
     fn connect_with_timeout_refused() {
         mioco_config_start(|| {
             let target = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 65534);
-            TcpStream::connect_with_timeout(&target, 5000).unwrap();
-        }).unwrap();
+            TcpStream::connect_with_timeout(&target, 5000)
+        }).unwrap().unwrap();
     }
     #[test]
     #[should_panic(expected = "TimedOut")]
     fn connect_with_timeout_timeout() {
         mioco_config_start(|| {
             let target = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(202, 96, 128, 68)), 65534);
-            TcpStream::connect_with_timeout(&target, 10).unwrap();
-        }).unwrap();
+            TcpStream::connect_with_timeout(&target, 10)
+        }).unwrap().unwrap();
     }
 }
