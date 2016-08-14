@@ -14,7 +14,7 @@ use parking_lot::Mutex as PlMutex;
 use itertools::Itertools;
 use chrono::duration::Duration as ChDuration;
 
-use utils::{CloneExt, MessageExt, AsDisplay};
+use utils::{MessageExt, AsDisplay};
 use config::Config;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]

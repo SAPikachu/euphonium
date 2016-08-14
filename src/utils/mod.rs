@@ -61,20 +61,6 @@ quick_error! {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub trait CloneExt {
-    fn clone(&self) -> Self;
-}
-
-impl CloneExt for Query {
-    fn clone(&self) -> Query {
-        let mut ret = Query::new();
-        ret.name(self.get_name().clone())
-            .query_type(self.get_query_type())
-            .query_class(self.get_query_class());
-        ret
-    }
-}
-
 pub trait MessageExt {
     fn to_bytes(&self) -> Result<Vec<u8>>;
     fn from_bytes(buf: &[u8]) -> Result<Message>;

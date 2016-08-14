@@ -69,6 +69,13 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         };
         cur_time < expiration
     }
+    fn subquery(&self, name: &Name, query_type: RecordType, class: DNSClass) -> Result<Message> {
+        let mut q = Query::new();
+        q.name(name.clone());
+        q.query_type(query_type);
+        q.query_class(class);
+        self.resolver.resolve_sub(q)
+    }
     fn verify_ds(&self, dnskey: &Record) -> Result<bool> {
         let (public_key, algorithm) = if let RData::DNSKEY(ref rdata) = *dnskey.get_rdata() {
             (rdata.get_public_key(), rdata.get_algorithm())
@@ -83,11 +90,11 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             // Avoid infinite loop
             return Ok(false);
         }
-        let mut q = Query::new();
-        q.name(dnskey.get_name().clone());
-        q.query_type(RecordType::DS);
-        q.query_class(dnskey.get_dns_class());
-        let ds_resp = try!(self.resolver.resolve_sub(q));
+        let ds_resp = try!(self.subquery(
+            dnskey.get_name(),
+            RecordType::DS,
+            dnskey.get_dns_class(),
+        ));
         let mut buf = Vec::<u8>::new();
         {
             let mut encoder = BinEncoder::new(&mut buf);
@@ -212,6 +219,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                     Some(x) => x,
                     None => continue,
                 };
+                // Wildcard is handled in `hash_rrset`
                 let rrset_hash: Vec<u8> = signer.hash_rrset(
                     rr_name, rr_class,
                     sig.get_num_labels(), sig.get_type_covered(), sig.get_algorithm(),
@@ -241,8 +249,35 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         .collect_vec();
 
         if rrsigs.is_empty() {
-            // TODO: Check whether this zone is really not signed
-            debug!("No Sig");
+            let q = &msg.get_queries()[0];
+            let mut name = q.get_name().clone();
+            if q.get_query_type() == RecordType::DS && !name.is_root() {
+                name = name.base_name();
+
+            }
+            let class = q.get_query_class();
+            while !name.is_root() {
+                let ds_resp = try!(self.subquery(&name, RecordType::DS, class));
+                let have_ds = ds_resp.get_answers().iter().any(
+                    |rec| *rec.get_name() == name && rec.get_rr_type() == RecordType::DS
+                );
+                if have_ds {
+                    // Secure zone, but we got no RRSIG
+                    return Ok(ValidationResult::Bogus);
+                }
+                let have_nsec = ds_resp.get_name_servers().iter().any(
+                    |rec| match *rec.get_rdata() {
+                        RData::NSEC(ref nsec) => true, // TODO
+                        RData::NSEC3(ref nsec3) => true, // TODO
+                        _ => false,
+                    }
+                );
+                if have_nsec {
+                    // Insecure zone
+                    break;
+                }
+                name = name.base_name();
+            }
             return Ok(ValidationResult::NonAuthenticated);
         }
         // Group the record sets by name and type
@@ -296,9 +331,12 @@ mod tests {
     use std::time::Duration;
     use trust_dns::op::*;
     use trust_dns::rr::*;
+    use trust_dns::serialize::binary::*;
     use super::*;
     use ::query::query;
     use ::resolver::*;
+    use ::recursive::*;
+    use ::utils::MessageExt;
     use ::mioco_config_start;
 
     fn test_query(domain: &str) -> Message {
@@ -306,9 +344,7 @@ mod tests {
         q.name(Name::parse(domain, Some(&Name::root())).unwrap())
         .query_class(DNSClass::IN)
         .query_type(RecordType::A);
-        let msg = query(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5)).unwrap();
-        assert!(msg.get_answers().iter().any(|r| r.get_rr_type() == RecordType::RRSIG));
-        msg
+        query(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5)).unwrap()
     }
 
     #[test]
@@ -316,8 +352,29 @@ mod tests {
         env_logger::init().is_ok();
         mioco_config_start(move || {
             let resolver = RcResolver::default();
-            let msg = test_query("sigok.verteiltesysteme.net");
             let mut validator = DnssecValidator::new(resolver.clone());
+            let msg = test_query("sigok.verteiltesysteme.net");
+            assert!(msg.get_answers().iter().any(|r| r.get_rr_type() == RecordType::RRSIG));
+            assert!(validator.is_valid(&msg));
+        }).unwrap();
+    }
+    #[test]
+    fn test_dnssec_valid_rollernet() {
+        env_logger::init().is_ok();
+        mioco_config_start(move || {
+            let resolver = RcResolver::default();
+            let mut validator = DnssecValidator::new(resolver.clone());
+            let msg = test_query("ns1.rollernet.us");
+            assert!(validator.is_valid(&msg));
+        }).unwrap();
+    }
+    #[test]
+    fn test_dnssec_valid_rollernet3() {
+        env_logger::init().is_ok();
+        mioco_config_start(move || {
+            let resolver = RcResolver::default();
+            let mut validator = DnssecValidator::new(resolver.clone());
+            let msg = test_query("nS3-i.rOllErnet.Us");
             assert!(validator.is_valid(&msg));
         }).unwrap();
     }
@@ -327,8 +384,82 @@ mod tests {
         mioco_config_start(move || {
             let resolver = RcResolver::default();
             let msg = test_query("sigfail.verteiltesysteme.net");
+            assert!(msg.get_answers().iter().any(|r| r.get_rr_type() == RecordType::RRSIG));
             let mut validator = DnssecValidator::new(resolver.clone());
             assert!(!validator.is_valid(&msg));
+        }).unwrap();
+    }
+    #[test]
+    fn test_dnssec_integrated() {
+        env_logger::init().is_ok();
+        mioco_config_start(move || {
+            let resolver = RcResolver::default();
+            let mut q = Query::new();
+            q.name(Name::parse("sigok.verteiltesysteme.net.", None).unwrap())
+            .query_class(DNSClass::IN)
+            .query_type(RecordType::A);
+            RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
+            q.name(Name::parse("nS3-i.rOllErnet.Us.", None).unwrap());
+            RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
+            q.name(Name::parse("ns1.rollernet.us.", None).unwrap());
+            RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
+            q.name(Name::parse("sigfail.verteiltesysteme.net.", None).unwrap());
+            RecursiveResolver::resolve(&q, resolver.clone()).unwrap_err();
+        }).unwrap();
+    }
+    #[test]
+    #[ignore]
+    fn test_dnssec_rollernet() {
+        // This test will fail after signature in the data is expired, leaving here for
+        // reference only
+        env_logger::init().is_ok();
+        mioco_config_start(move || {
+            let resolver = RcResolver::default();
+            let data_str = r"
+2ef9 8100
+0001 0000 0005 0005 036e 7331 0972 6f6c
+6c65 726e 6574 0275 7300 0001 0001 0952
+4f4c 4c45 524e 4554 c01a 0002 0001 0000
+1c20 0008 054e 5332 2d49 c022 c022 0002
+0001 0000 1c20 0015 054e 5333 2d49 0952
+4f4c 4c45 524e 4554 034e 4554 00c0 2200
+0200 0100 001c 2000 0805 4e53 312d 49c0
+22c0 2200 2f00 0100 0151 8000 1a0d 524f
+4c4c 4552 4e45 5457 4f52 4b02 7573 0000
+0620 0000 0000 03c0 2200 2e00 0100 0151
+8000 9600 2f05 0200 0151 8057 c96e 9d57
+a1db 4de7 5402 7573 00a2 c40a cbd5 1927
+11fe 6626 fe7e 1d5f de05 531a 3c2b ac74
+0686 c2e6 1271 efb9 bc72 3c08 84bf 7f99
+2c0c 46e0 e58b b6b1 9b03 b125 4782 d9b1
+83ee 06f4 18b3 d841 fee2 19ea 669d 8b05
+0db4 9d45 7d3b 6a93 61b9 69ad 5104 8579
+242f 949b 9f4e 41d6 07d2 5d85 330a 52c4
+bcd9 5a71 2175 6aea 74de e939 e23f fb8a
+b461 677e cf31 8883 b8c0 6d00 0100 0100
+001c 2000 04d0 4ff0 14c0 6d00 1c00 0100
+001c 2000 1026 07fe 7000 0000 0300 0000
+0000 0000 10c0 3800 0100 0100 001c 2000
+04d0 4ff1 14c0 3800 1c00 0100 001c 2000
+1026 07fe 7000 0000 0400 0000 0000 0000
+1000 0029 1000 0000 8000 0000
+            ";
+            use rustc_serialize::hex::*;
+            let data = data_str.from_hex().unwrap();
+            assert_eq!(data.len(), 416);
+            let msg = Message::from_bytes(&data).unwrap();
+            debug!("{:?}", msg);
+            debug!("{:?}", msg.get_name_servers()[3]);
+            debug!("{:?}", msg.to_bytes().unwrap().len());
+            let mut nsec_bytes = Vec::<u8>::new();
+            {
+                let mut encoder = BinEncoder::new(&mut nsec_bytes);
+                encoder.set_canonical_names(true);
+                msg.get_name_servers()[3].emit(&mut encoder).unwrap();
+            }
+            debug!("{}", nsec_bytes.to_hex());
+            let mut validator = DnssecValidator::new(resolver.clone());
+            assert!(validator.is_valid(&msg));
         }).unwrap();
     }
 }

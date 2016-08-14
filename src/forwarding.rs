@@ -5,7 +5,7 @@ use trust_dns::op::{Message, Query};
 use trust_dns::rr::RData;
 use itertools::Itertools;
 
-use utils::{Result, CloneExt};
+use utils::{Result};
 use cache::RecordSource;
 use config::Config;
 use resolver::{RcResolver, ErrorKind};

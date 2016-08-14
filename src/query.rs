@@ -7,7 +7,7 @@ use mioco::udp::UdpSocket;
 use mioco::tcp::{TcpStream};
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 
-use utils::{Result, Error, CloneExt, MessageExt, WithTimeout, Future, AsDisplay};
+use utils::{Result, Error, MessageExt, WithTimeout, Future, AsDisplay};
 use utils::with_timeout::TcpStreamExt;
 use transport::{DnsTransport, DnsMsgTransport};
 use validator::{ResponseValidator, DummyValidator};
@@ -158,6 +158,9 @@ pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>)
             },
             Err(Error::Io(ref err)) if err.kind() == io::ErrorKind::TimedOut => {
                 debug!("Timed out");
+            },
+            Err(Error::Query(ErrorKind::ValidationFailure(ref msg))) => {
+                trace!("ValidationFailure: {:?}", msg);
             },
             Err(ref err) => {
                 debug!("Error {:?}", err);

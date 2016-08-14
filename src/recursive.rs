@@ -9,7 +9,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, CloneExt, Future, AsDisplay, MessageExt};
+use utils::{Result, Future, AsDisplay, MessageExt};
 use query::{query_multiple_handle_futures, query_with_validator};
 use cache::{Cache, RecordSource};
 use nscache::NsCache;
@@ -370,10 +370,16 @@ impl RecursiveResolver {
         if let Some(msg) = self.get_cache().lookup(q, |m| m.create_response()) {
             return Ok(msg);
         }
+        try!(self.maybe_stop());
+        if *q == self.state.query {
+            return Err(ErrorKind::AlreadyQueried.into());
+        }
         let (send, recv) = {
             use std::mem;
             match self.state.subqueries.lock().unwrap().entry(q.into()) {
                 Vacant(e) => {
+                    debug!("Subquery (new): {} -> {}",
+                           self.state.query.as_disp(), q.as_disp());
                     e.insert(Pending(None));
                     (None, None)
                 },
@@ -382,6 +388,8 @@ impl RecursiveResolver {
                         Completed(ref msg) => return Ok(msg.clone()),
                         Error => return Err(ErrorKind::AlreadyQueried.into()),
                         Pending(ref mut stored_sender) => {
+                            debug!("Subquery (existing): {} -> {}",
+                                   self.state.query.as_disp(), q.as_disp());
                             let (send, recv) = channel::<Option<Message>>();
                             let mut send_opt = Some(send);
                             mem::swap(stored_sender, &mut send_opt);

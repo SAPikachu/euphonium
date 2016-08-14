@@ -25,7 +25,7 @@ dependencies = [
  "serde_macros 0.7.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_yaml 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "treebitmap 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "trust-dns 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-dns 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "yaml-rust 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -179,6 +179,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "error-chain"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "backtrace 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "gcc"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -230,9 +238,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsqlite3-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "libc 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pkg-config 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "linked-hash-map"
+version = "0.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "log"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "lru-cache"
+version = "0.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "linked-hash-map 0.0.9 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "matches"
@@ -500,6 +530,18 @@ version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
+name = "rusqlite"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "bitflags 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libsqlite3-sys 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lru-cache 0.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "time 0.1.35 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -658,18 +700,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "trust-dns"
-version = "0.6.0"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "backtrace 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "chrono 0.2.22 (registry+https://github.com/rust-lang/crates.io-index)",
  "data-encoding 1.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "docopt 0.6.81 (registry+https://github.com/rust-lang/crates.io-index)",
+ "error-chain 0.1.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "openssl 0.7.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "openssl-sys 0.7.14 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rusqlite 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-serialize 0.3.19 (registry+https://github.com/rust-lang/crates.io-index)",
+ "time 0.1.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "toml 0.1.30 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 

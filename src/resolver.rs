@@ -10,7 +10,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{Name};
 use itertools::Itertools;
 
-use utils::{Result, MessageExt, AsDisplay, Future, CloneExt};
+use utils::{Result, MessageExt, AsDisplay, Future};
 use cache::Cache;
 use nscache::NsCache;
 use config::Config;
@@ -207,6 +207,7 @@ impl RcResolver {
 
 #[cfg(test)]
 mod tests {
+    use env_logger;
     use trust_dns::op::*;
     use trust_dns::rr::*;
     use mioco;
@@ -217,6 +218,7 @@ mod tests {
 
     #[test]
     fn simple_recursive_query() {
+        env_logger::init().is_ok();
         mioco_config_start(|| {
             let config = Config::default();
             let resolver = RcResolver::new(config);
