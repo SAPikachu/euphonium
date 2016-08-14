@@ -62,10 +62,7 @@ impl RecursiveResolverState {
     }
     fn new_inner(&self, q: &Query) -> Result<Self> {
         let queried_items = {
-            let mut guard = self.queried_items.lock().unwrap();
-            if !guard.insert(QueriedItem::Query(q.into())) {
-                return Err(ErrorKind::AlreadyQueried.into());
-            }
+            let guard = self.queried_items.lock().unwrap();
             let mut items = HashSet::<QueriedItem>::new();
             // Exclude NS and NSDomain, since we are querying a different domain
             items.extend(
@@ -74,6 +71,9 @@ impl RecursiveResolverState {
                 .filter(|x| if let QueriedItem::NSDomain(_) = **x { false } else { true })
                 .map(|x| (*x).clone())
             );
+            if !items.insert(QueriedItem::Query(q.into())) {
+                return Err(ErrorKind::AlreadyQueried.into());
+            }
             items
         };
         Ok(RecursiveResolverState {
@@ -379,6 +379,10 @@ impl RecursiveResolver {
         }
         try!(self.maybe_stop());
         if *q == self.state.query {
+            return Err(ErrorKind::AlreadyQueried.into());
+        }
+        if self.state.queried_items.lock().unwrap().contains(&QueriedItem::Query(q.into())) {
+            // Avoid query loop which causes resource leak
             return Err(ErrorKind::AlreadyQueried.into());
         }
         let (send, recv) = {
