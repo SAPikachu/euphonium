@@ -167,6 +167,9 @@ impl RecordEntry {
         .chain(self.message.get_name_servers())
         .any(|rec| rec.get_rr_type() == RecordType::RRSIG)
     }
+    pub fn get_source(&self) -> RecordSource {
+        self.source
+    }
     pub fn adjust_ttl(&self, rec: &mut Record) {
         match self.ttl {
             TtlMode::Original => {},

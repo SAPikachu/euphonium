@@ -367,7 +367,14 @@ impl RecursiveResolver {
     fn resolve_next(&self, q: &Query) -> Result<Message> {
         use std::collections::hash_map::Entry::{Occupied, Vacant};
         use ::recursive::SubqueryState::{Pending, Completed, Error};
-        if let Some(msg) = self.get_cache().lookup(q, |m| m.create_response()) {
+        if let Some(Some(msg)) = self.get_cache().lookup(
+            q,
+            |m| if m.get_source() >= RecordSource::Recursive {
+                Some(m.create_response())
+            } else {
+                None
+            },
+        ) {
             return Ok(msg);
         }
         try!(self.maybe_stop());
