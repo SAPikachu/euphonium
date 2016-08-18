@@ -278,15 +278,9 @@ impl RecursiveResolver {
                           next_query.get_name(), self.state.query.as_disp(), e);
                     return Ok(msg);
                 },
-                Ok(ref next_msg) if
-                    next_msg.get_response_code() != ResponseCode::NoError
-                => {
-                    warn!("Failed to resolve CNAME {}: Server returned error: {:?}",
-                          next_query.get_name(), next_msg.get_response_code());
-                    return Ok(msg);
-                }
                 Ok(next_msg) => {
                     let mut new_msg = msg.without_rr();
+                    new_msg.response_code(next_msg.get_response_code());
                     unresolved_cnames.iter().cloned().foreach(|x| {
                         new_msg.add_answer(x);
                     });
