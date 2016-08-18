@@ -135,6 +135,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         ))
     }
     fn calculate_dnskey_tag(key: &DNSKEY) -> u16 {
+        // FIXME: This doesn't handle the special case of algorithm 1
         let mut buf = Vec::<u8>::new();
         {
             let mut encoder = BinEncoder::new(&mut buf);
@@ -243,17 +244,19 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
     }
     // Largely stolen from trust-dns
     fn verify_rrsigs(&self, msg: &Message) -> Result<ValidationResult> {
+        debug_assert!(msg.get_queries().len() == 1);
+        let q = &msg.get_queries()[0];
+        let query_name = q.get_name();
+        let query_type = q.get_query_type();
         let rrsigs = msg.get_answers().iter()
         .chain(msg.get_name_servers())
         .filter(|rr| rr.get_rr_type() == RecordType::RRSIG)
         .collect_vec();
 
         if rrsigs.is_empty() {
-            let q = &msg.get_queries()[0];
-            let mut name = q.get_name().clone();
-            if q.get_query_type() == RecordType::DS && !name.is_root() {
+            let mut name = query_name.clone();
+            if query_type == RecordType::DS && !name.is_root() {
                 name = name.base_name();
-
             }
             let class = q.get_query_class();
             while !name.is_root() {
@@ -314,9 +317,25 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 return Ok(ValidationResult::Bogus);
             }
         }
-
+        let have_answer = msg.get_answers().iter().any(|rec| {
+            (rec.get_rr_type() == query_type ||
+             rec.get_rr_type() == RecordType::CNAME) &&
+            rec.get_name() == query_name
+        });
+        if have_answer {
+            return Ok(ValidationResult::Authenticated);
+        }
+        let is_secure_delegation = msg.get_name_servers().iter().any(|rec| {
+            rec.get_rr_type() == RecordType::DS && rec.get_name().zone_of(query_name)
+        });
+        if is_secure_delegation {
+            return Ok(ValidationResult::Authenticated);
+        }
         // TODO: Verify NSEC/NSEC3
+        // TODO: Handle wildcard (RFC7129)
         Ok(ValidationResult::Authenticated)
+    }
+    fn verify_nsec(&self, q: &Query, nsec_rrset: &[Record]) -> bool {
     }
 }
 impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {
