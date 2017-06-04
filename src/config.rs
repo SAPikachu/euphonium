@@ -102,6 +102,7 @@ pub struct ForwarderConfig {
 pub struct QueryConfig {
     pub timeout: ProxiedValue<u32, Duration>,
     pub trust_cname_hinting: bool,
+    pub enable_dnssec: bool,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]

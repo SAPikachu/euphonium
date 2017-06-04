@@ -15,7 +15,7 @@ use cache::{Cache, RecordSource};
 use nscache::NsCache;
 use config::Config;
 use resolver::{ErrorKind, RcResolver};
-use validator::{DnssecValidator, SubqueryResolver};
+use validator::{DnssecValidator, SubqueryResolver, DummyValidator};
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 struct QueryHash(Name, RecordType, DNSClass);
@@ -192,14 +192,27 @@ impl RecursiveResolver {
         }
         Ok(())
     }
+    fn query_ns_impl(&self, ns: IpAddr) -> Result<Message> {
+        let enable_dnssec = self.get_config().query.enable_dnssec;
+        if enable_dnssec {
+            query_with_validator(
+                self.state.query.clone(),
+                ns,
+                *self.get_config().query.timeout,
+                &mut DnssecValidator::new(self),
+            )
+        } else {
+            query_with_validator(
+                self.state.query.clone(),
+                ns,
+                *self.get_config().query.timeout,
+                &mut DummyValidator,
+            )
+        }
+    }
     fn query_ns(self, ns: IpAddr) -> Result<Message> {
         try!(self.maybe_stop());
-        let result = try!(query_with_validator(
-            self.state.query.clone(),
-            ns,
-            *self.get_config().query.timeout,
-            &mut DnssecValidator::new(&self),
-        ));
+        let result = try!(self.query_ns_impl(ns));
         try!(self.maybe_stop());
         if result.get_response_code() != ResponseCode::NoError {
             return Ok(result);

@@ -27,11 +27,23 @@ enum ValidationResult {
 }
 pub trait ResponseValidator {
     fn is_valid(&mut self, msg: &Message) -> bool;
+    fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns);
 }
 pub struct DummyValidator;
 impl ResponseValidator for DummyValidator {
     fn is_valid(&mut self, _: &Message) -> bool {
         true
+    }
+    fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns) { }
+}
+pub struct DummyValidatorWithDnssec;
+impl ResponseValidator for DummyValidatorWithDnssec {
+    fn is_valid(&mut self, _: &Message) -> bool {
+        true
+    }
+    fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns) {
+        edns.set_dnssec_ok(true);
+        msg.checking_disabled(true);
     }
 }
 pub trait SubqueryResolver {
@@ -336,9 +348,14 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         Ok(ValidationResult::Authenticated)
     }
     fn verify_nsec(&self, q: &Query, nsec_rrset: &[Record]) -> bool {
+        unimplemented!()
     }
 }
 impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {
+    fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns) {
+        edns.set_dnssec_ok(true);
+        msg.checking_disabled(true);
+    }
     fn is_valid(&mut self, msg: &Message) -> bool {
         self.verify_rrsigs(msg).unwrap_or(ValidationResult::Bogus) != ValidationResult::Bogus
     }
@@ -352,7 +369,8 @@ mod tests {
     use trust_dns::rr::*;
     use trust_dns::serialize::binary::*;
     use super::*;
-    use ::query::query;
+    use ::query::query_with_validator;
+    use ::config::*;
     use ::resolver::*;
     use ::recursive::*;
     use ::utils::MessageExt;
@@ -363,14 +381,20 @@ mod tests {
         q.name(Name::parse(domain, Some(&Name::root())).unwrap())
         .query_class(DNSClass::IN)
         .query_type(RecordType::A);
-        query(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5)).unwrap()
+        query_with_validator(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5), &mut DummyValidatorWithDnssec).unwrap()
+    }
+
+    fn new_resolver() -> RcResolver {
+        let mut config = Config::default();
+        config.query.enable_dnssec = true;
+        RcResolver::new(config)
     }
 
     #[test]
     fn test_dnssec_valid() {
         env_logger::init().is_ok();
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
+            let resolver = new_resolver();
             let mut validator = DnssecValidator::new(resolver.clone());
             let msg = test_query("sigok.verteiltesysteme.net");
             assert!(msg.get_answers().iter().any(|r| r.get_rr_type() == RecordType::RRSIG));
@@ -381,7 +405,7 @@ mod tests {
     fn test_dnssec_valid_rollernet() {
         env_logger::init().is_ok();
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
+            let resolver = new_resolver();
             let mut validator = DnssecValidator::new(resolver.clone());
             let msg = test_query("ns1.rollernet.us");
             assert!(validator.is_valid(&msg));
@@ -391,9 +415,19 @@ mod tests {
     fn test_dnssec_valid_rollernet3() {
         env_logger::init().is_ok();
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
+            let resolver = new_resolver();
             let mut validator = DnssecValidator::new(resolver.clone());
             let msg = test_query("nS3-i.rOllErnet.Us");
+            assert!(validator.is_valid(&msg));
+        }).unwrap();
+    }
+    #[test]
+    fn test_dnssec_valid_cloudflare() {
+        env_logger::init().is_ok();
+        mioco_config_start(move || {
+            let resolver = new_resolver();
+            let mut validator = DnssecValidator::new(resolver.clone());
+            let msg = test_query("blog.cloudflare.com");
             assert!(validator.is_valid(&msg));
         }).unwrap();
     }
@@ -401,7 +435,7 @@ mod tests {
     fn test_dnssec_invalid() {
         env_logger::init().is_ok();
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
+            let resolver = new_resolver();
             let msg = test_query("sigfail.verteiltesysteme.net");
             assert!(msg.get_answers().iter().any(|r| r.get_rr_type() == RecordType::RRSIG));
             let mut validator = DnssecValidator::new(resolver.clone());
@@ -412,7 +446,7 @@ mod tests {
     fn test_dnssec_integrated() {
         env_logger::init().is_ok();
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
+            let resolver = new_resolver();
             let mut q = Query::new();
             q.name(Name::parse("sigok.verteiltesysteme.net.", None).unwrap())
             .query_class(DNSClass::IN)
@@ -433,7 +467,7 @@ mod tests {
         // reference only
         env_logger::init().is_ok();
         mioco_config_start(move || {
-            let resolver = RcResolver::default();
+            let resolver = new_resolver();
             let data_str = r"
 2ef9 8100
 0001 0000 0005 0005 036e 7331 0972 6f6c

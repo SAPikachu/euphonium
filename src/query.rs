@@ -39,10 +39,11 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
     if edns_mode != EdnsMode::Disabled {
         let mut edns = Edns::new();
         edns.set_version(EDNS_VER);
-        edns.set_dnssec_ok(true);
         edns.set_max_payload(EDNS_MAX_PAYLOAD);
+        validator.prepare_msg(&mut msg, &mut edns);
+        let cd = msg.is_checking_disabled();
         msg.set_edns(edns);
-        msg.checking_disabled(true);
+        msg.checking_disabled(cd);
     }
     msg.add_query(q);
     debug!("[{}] {}", transport, msg.as_disp());
