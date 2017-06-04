@@ -214,6 +214,13 @@ impl RecursiveResolver {
         try!(self.maybe_stop());
         let result = try!(self.query_ns_impl(ns));
         try!(self.maybe_stop());
+        if result.get_response_code() == ResponseCode::NXDomain &&
+            result.get_answers().len() == 1 &&
+            result.get_answers()[0].get_rr_type() == RecordType::CNAME
+        {
+            // https://serverfault.com/questions/157775/can-a-valid-cname-response-contain-an-nxdomain-status
+            return self.handle_normal_resp(result);
+        }
         if result.get_response_code() != ResponseCode::NoError {
             return Ok(result);
         }
