@@ -13,27 +13,27 @@ impl<'a, T: 'static + ?Sized> AsDisplay for T where DisplayWrapper<'a, T>: Displ
 impl<'a> Display for DisplayWrapper<'a, Query> {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         let q = self.0;
-        write!(f, "{} {:?} {:?}", q.get_name(), q.get_query_type(), q.get_query_class())
+        write!(f, "{} {:?} {:?}", q.name(), q.query_type(), q.query_class())
     }
 }
 impl<'a> Display for DisplayWrapper<'a, Message> {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         let msg = self.0;
-        match msg.get_message_type() {
-            MessageType::Query if msg.get_queries().is_empty() => write!(
-                f, "[{}] (no query)", msg.get_id(),
+        match msg.message_type() {
+            MessageType::Query if msg.queries().is_empty() => write!(
+                f, "[{}] (no query)", msg.id(),
             ),
             MessageType::Query => write!(
-                f, "[{}] {}", msg.get_id(), msg.get_queries()[0].as_disp(),
+                f, "[{}] {}", msg.id(), msg.queries()[0].as_disp(),
             ),
             MessageType::Response => write!(
                 f,
                 "[{}] {:?} {}/{}/{}",
-                msg.get_id(),
-                msg.get_response_code(),
-                msg.get_answers().len(),
-                msg.get_name_servers().len(),
-                msg.get_additional().len(),
+                msg.id(),
+                msg.response_code(),
+                msg.answers().len(),
+                msg.name_servers().len(),
+                msg.additionals().len(),
             )
         }
     }

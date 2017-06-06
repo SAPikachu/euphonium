@@ -29,9 +29,8 @@ serde_yaml = "^0.7"
 serde_derive = "*"
 time = "*"
 treebitmap = { git = "https://github.com/sopium/treebitmap.git" }
-trust-dns = "^0.7.1"
+trust-dns = "^0.10"
 yaml-rust = "*"
-openssl = "^0.7.14"
 lazy_static = "*"
 
 [dev-dependencies]

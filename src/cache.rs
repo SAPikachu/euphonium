@@ -21,8 +21,8 @@ use config::Config;
 pub struct Key(Name, RecordType);
 impl<'a> From<&'a Query> for Key {
     fn from(q: &'a Query) -> Self {
-        assert!(q.get_query_class() == DNSClass::IN);
-        Key(q.get_name().clone(), q.get_query_type())
+        assert!(q.query_class() == DNSClass::IN);
+        Key(q.name().clone(), q.query_type())
     }
 }
 impl From<Query> for Key {
@@ -77,10 +77,10 @@ impl IsGcEligible for RecordEntry {
             return false;
         }
         let is_important_query = [RecordType::A, RecordType::AAAA].contains(
-            &self.message.get_queries()[0].get_query_type()
+            &self.message.queries()[0].query_type()
         );
-        let is_useful_resp = self.message.get_response_code() == ResponseCode::NoError &&
-            !self.message.get_answers().is_empty();
+        let is_useful_resp = self.message.response_code() == ResponseCode::NoError &&
+            !self.message.answers().is_empty();
         if mode == GcMode::Aggressive && (!is_important_query || !is_useful_resp) {
             return true;
         }
@@ -118,7 +118,7 @@ impl RecordEntry {
             // Lost race
             return;
         }
-        let q = self.message.get_queries()[0].clone();
+        let q = self.message.queries()[0].clone();
         debug!("Entry expired: {}", q.as_disp());
         let sender = if cfg!(debug_assertions) {
             sender_locked.try_lock()
@@ -151,29 +151,29 @@ impl RecordEntry {
     pub fn create_response(&self) -> Message {
         let mut ret = Message::new();
         self.fill_response(&mut ret);
-        ret.add_query(self.message.get_queries()[0].clone());
+        ret.add_query(self.message.queries()[0].clone());
         ret
     }
     pub fn fill_response(&self, msg: &mut Message) {
         self.maybe_notify_expiration();
         msg.copy_resp_with(&self.message, |rec| {
             let mut new_rec = rec.clone();
-            self.adjust_ttl(&mut new_rec);
+            self.adjust_set_ttl(&mut new_rec);
             new_rec
         });
     }
     pub fn is_authenticated(&self) -> bool {
-        self.message.get_answers().iter()
-        .chain(self.message.get_name_servers())
-        .any(|rec| rec.get_rr_type() == RecordType::RRSIG)
+        self.message.answers().iter()
+        .chain(self.message.name_servers())
+        .any(|rec| rec.rr_type() == RecordType::RRSIG)
     }
     pub fn get_source(&self) -> RecordSource {
         self.source
     }
-    pub fn adjust_ttl(&self, rec: &mut Record) {
+    pub fn adjust_set_ttl(&self, rec: &mut Record) {
         match self.ttl {
             TtlMode::Original => {},
-            TtlMode::Fixed(secs) => { rec.ttl(secs); },
+            TtlMode::Fixed(secs) => { rec.set_ttl(secs); },
             TtlMode::Relative(relto) => {
                 match relto.elapsed() {
                     Err(e) => {
@@ -181,12 +181,12 @@ impl RecordEntry {
                     },
                     Ok(dur) => {
                         let diff = min(dur.as_secs(), i32::max_value() as u64) as u32;
-                        let mut new_ttl = rec.get_ttl().saturating_sub(diff);
+                        let mut new_ttl = rec.ttl().saturating_sub(diff);
                         new_ttl = max(new_ttl, self.shared.config.cache.min_response_ttl);
                         if self.is_expired() {
                             new_ttl = 1
                         }
-                        rec.ttl(new_ttl);
+                        rec.set_ttl(new_ttl);
                     },
                 };
             },
@@ -273,7 +273,7 @@ impl CachePlain {
     pub fn purge(&mut self, key: &Query) -> Option<Message> {
         self.records.remove(&key.into()).map(|entry| entry.message)
     }
-    fn get_ttl_mode(&self, source: RecordSource) -> TtlMode {
+    fn ttl_mode(&self, source: RecordSource) -> TtlMode {
         match source {
             RecordSource::Pinned => TtlMode::Original,
             RecordSource::Forwarder => TtlMode::Fixed(1),
@@ -282,36 +282,36 @@ impl CachePlain {
     }
     pub fn update(&mut self, msg: &Message, source: RecordSource) {
         self.ensure_cache_limit();
-        assert!(msg.get_queries().len() == 1);
+        assert!(msg.queries().len() == 1);
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
-        if !accepted_responses.contains(&msg.get_response_code()) {
+        if !accepted_responses.contains(&msg.response_code()) {
             return;
         }
-        let key: Key = (&msg.get_queries()[0]).into();
+        let key: Key = (&msg.queries()[0]).into();
         if let Some(existing) = self.records.get(&key) {
             if !existing.is_expired() && existing.source >= source {
                 // Existing record is more preferable
                 return;
             }
         }
-        let all_records = msg.get_answers().iter()
-        .chain(msg.get_name_servers())
-        .chain(msg.get_additional())
-        .filter(|x| x.get_rr_type() != RecordType::OPT);
+        let all_records = msg.answers().iter()
+        .chain(msg.name_servers())
+        .chain(msg.additionals())
+        .filter(|x| x.rr_type() != RecordType::OPT);
         // TODO: NXDomain should be cached for shorter time
         let min_cache_ttl = self.shared.config.cache.min_cache_ttl;
         let mut cache_ttl = max(
             min_cache_ttl,
-            all_records.map(|x| x.get_ttl()).min().unwrap_or(min_cache_ttl),
+            all_records.map(|x| x.ttl()).min().unwrap_or(min_cache_ttl),
         ) as u64;
-        if msg.get_response_code() != ResponseCode::NoError {
+        if msg.response_code() != ResponseCode::NoError {
             cache_ttl = min(cache_ttl, self.shared.config.cache.neg_cache_ttl as u64);
         }
         debug!("Updating cache: {} -> {} (TTL: {})",
-               msg.get_queries()[0].as_disp(), msg.as_disp(), cache_ttl);
+               msg.queries()[0].as_disp(), msg.as_disp(), cache_ttl);
         let mut cache_msg = msg.clone_resp();
-        cache_msg.add_query(msg.get_queries()[0].clone());
-        let ttl_mode = self.get_ttl_mode(source);
+        cache_msg.add_query(msg.queries()[0].clone());
+        let ttl_mode = self.ttl_mode(source);
         self.records.insert(key, RecordEntry {
             message: cache_msg,
             expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
@@ -352,7 +352,7 @@ impl Cache {
     }
     pub fn fill_response(&self, msg: &mut Message) -> bool {
         let guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
-        let entry = guard.lookup(&msg.get_queries()[0]);
+        let entry = guard.lookup(&msg.queries()[0]);
         entry.map(|e| e.fill_response(msg)).is_some()
     }
     pub fn operate<F, R>(&self, op: F) -> R
@@ -366,12 +366,12 @@ impl Cache {
     }
     pub fn update_from_message(&self, msg: &Message, source: RecordSource) {
         if cfg!(debug_assertions) {
-            assert!(msg.get_op_code() == OpCode::Query);
-            assert!(msg.get_message_type() == MessageType::Response);
-            assert!(msg.get_queries().len() == 1);
-            if !msg.get_answers().is_empty() {
-                let name = msg.get_queries()[0].get_name();
-                assert!(msg.get_answers().iter().any(|x| x.get_name() == name));
+            assert!(msg.op_code() == OpCode::Query);
+            assert!(msg.message_type() == MessageType::Response);
+            assert!(msg.queries().len() == 1);
+            if !msg.answers().is_empty() {
+                let name = msg.queries()[0].name();
+                assert!(msg.answers().iter().any(|x| x.name() == name));
             }
         }
         self.operate(|x| x.update(msg, source));
@@ -414,24 +414,24 @@ mod tests {
     use mioco;
     use ::mioco_config_start;
 
-    fn name(raw: &str) -> Name {
+    fn set_name(raw: &str) -> Name {
         Name::parse(raw, Some(&Name::root())).unwrap()
     }
     macro_rules! add_entry {
         ($cache:ident, $name:expr, $rtyp:ident, $rcode:ident $(, [$ttl:expr, $recdata:expr])*) => {{
-            let name = name($name);
+            let name = set_name($name);
             let mut q = Query::new();
-            q.name(name);
+            q.set_name(name);
             let mut msg = Message::new();
-            q.query_type(RecordType::$rtyp);
-            msg.message_type(MessageType::Response);
-            msg.response_code(ResponseCode::$rcode);
+            q.set_query_type(RecordType::$rtyp);
+            msg.set_message_type(MessageType::Response);
+            msg.set_response_code(ResponseCode::$rcode);
             msg.add_query(q);
             $(
                 let mut rec = Record::new();
-                rec.ttl($ttl);
-                rec.rr_type(RecordType::$rtyp);
-                rec.rdata(RData::$rtyp($recdata));
+                rec.set_ttl($ttl);
+                rec.set_rr_type(RecordType::$rtyp);
+                rec.set_rdata(RData::$rtyp($recdata));
                 msg.add_answer(rec);
              )*;
             $cache.update(&msg, RecordSource::Recursive);
@@ -493,7 +493,7 @@ mod tests {
                 // Normal mode
                 add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
                 add_entry!(cache, "www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
-                add_entry!(cache, "www.google.com", CNAME, NoError, [1, name("cname")]);
+                add_entry!(cache, "www.google.com", CNAME, NoError, [1, set_name("cname")]);
                 add_entry!(cache, "www.nonexistent.com", A, NXDomain);
 
                 assert_eq!(cache.len(), 4);
@@ -509,7 +509,7 @@ mod tests {
                 // Aggressive mode
                 add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
                 add_entry!(cache, "www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
-                add_entry!(cache, "www.google.com", CNAME, NoError, [1, name("cname")]);
+                add_entry!(cache, "www.google.com", CNAME, NoError, [1, set_name("cname")]);
                 add_entry!(cache, "www.nonexistent.com", A, NXDomain);
 
                 assert_eq!(cache.len(), 4);
@@ -543,18 +543,18 @@ mod tests {
     fn test_record_preference() {
         mioco_config_start(move || {
             let mut msg1 = Message::new();
-            msg1.message_type(MessageType::Response);
-            msg1.op_code(OpCode::Query);
+            msg1.set_message_type(MessageType::Response);
+            msg1.set_op_code(OpCode::Query);
             let name = Name::parse("www.google.com", Some(&Name::root())).unwrap();
             let t = RecordType::A;
             let mut q = Query::new();
-            q.name(name.clone());
-            q.query_type(t);
+            q.set_name(name.clone());
+            q.set_query_type(t);
             msg1.add_query(q.clone());
             let mut msg2 = msg1.clone_resp_for(&q);
             let mut rec = Record::new();
-            rec.ttl(3600);
-            rec.name(name.clone());
+            rec.set_ttl(3600);
+            rec.set_name(name.clone());
             msg1.add_answer(rec.clone());
             msg2.add_answer(rec.clone());
             msg2.add_answer(rec.clone());
@@ -562,47 +562,47 @@ mod tests {
             let cache = Cache::default();
             assert!(cache.lookup(&q, |x| x.create_response()).is_none());
             cache.update_from_message(&msg1, RecordSource::Forwarder);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 1);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 1);
 
             // Should replace cache with better message
             cache.update_from_message(&msg2, RecordSource::Recursive);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 2);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 2);
 
             // Should not replace cache with worse message
             cache.update_from_message(&msg1, RecordSource::Forwarder);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 2);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 2);
 
             // Should not replace cache until expiration
             cache.update_from_message(&msg1, RecordSource::Recursive);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 2);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 2);
 
             // Even better message
             cache.update_from_message(&msg1, RecordSource::Pinned);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().get_answers().len(), 1);
+            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 1);
         }).unwrap();
     }
     #[test]
     fn test_fill_response() {
         let cache = Cache::default();
         let mut msg = Message::new();
-        msg.message_type(MessageType::Response);
-        msg.op_code(OpCode::Query);
+        msg.set_message_type(MessageType::Response);
+        msg.set_op_code(OpCode::Query);
         let t = RecordType::A;
         let mut q = Query::new();
-        q.name(name("www.google.com"));
-        q.query_type(t);
+        q.set_name(set_name("www.google.com"));
+        q.set_query_type(t);
         msg.add_query(q.clone());
         cache.update_from_message(&msg, RecordSource::Recursive);
 
         msg = Message::new();
         msg.add_query(q.clone());
         assert!(cache.fill_response(&mut msg));
-        q.name(name("www.baidu.com"));
+        q.set_name(set_name("www.baidu.com"));
         msg = Message::new();
         msg.add_query(q.clone());
         assert!(!cache.fill_response(&mut msg));
-        q.name(name("www.google.com"));
-        q.query_type(RecordType::AAAA);
+        q.set_name(set_name("www.google.com"));
+        q.set_query_type(RecordType::AAAA);
         msg = Message::new();
         msg.add_query(q.clone());
         assert!(!cache.fill_response(&mut msg));
@@ -611,18 +611,18 @@ mod tests {
     fn test_cache_case_insensitivity() {
         let mut cache = CachePlain::default();
         let mut msg = Message::new();
-        msg.message_type(MessageType::Response);
-        msg.op_code(OpCode::Query);
+        msg.set_message_type(MessageType::Response);
+        msg.set_op_code(OpCode::Query);
         let t = RecordType::A;
         let mut q = Query::new();
-        q.name(name("www.google.com"));
-        q.query_type(t);
+        q.set_name(set_name("www.google.com"));
+        q.set_query_type(t);
         msg.add_query(q.clone());
 
         cache.update(&msg, RecordSource::Recursive);
         assert!(cache.lookup(&q).is_some());
-        assert!(cache.lookup(q.name(name("www.baidu.com"))).is_none());
-        assert!(cache.lookup(q.name(name("wWw.goOgle.coM"))).is_some());
+        assert!(cache.lookup(q.set_name(set_name("www.baidu.com"))).is_none());
+        assert!(cache.lookup(q.set_name(set_name("wWw.goOgle.coM"))).is_some());
     }
     #[test]
     fn test_ttl_adjust() {
@@ -642,34 +642,34 @@ mod tests {
             macro_rules! adjust {
                 ($e:expr) => {{
                     entry.ttl = $e;
-                    entry.adjust_ttl(&mut rec);
+                    entry.adjust_set_ttl(&mut rec);
                 }};
             };
-            rec.ttl(120);
+            rec.set_ttl(120);
             adjust!(TtlMode::Original);
-            assert_eq!(rec.get_ttl(), 120);
+            assert_eq!(rec.ttl(), 120);
             adjust!(TtlMode::Fixed(240));
-            assert_eq!(rec.get_ttl(), 240);
+            assert_eq!(rec.ttl(), 240);
 
             adjust!(TtlMode::Relative(SystemTime::now()));
-            assert_eq!(rec.get_ttl(), 240);
+            assert_eq!(rec.ttl(), 240);
             adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(10)));
-            assert_eq!(rec.get_ttl(), 230);
+            assert_eq!(rec.ttl(), 230);
             adjust!(TtlMode::Relative(SystemTime::now() - Duration::new(10, 999999999)));
-            assert_eq!(rec.get_ttl(), 219);
+            assert_eq!(rec.ttl(), 219);
             adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(500)));
-            assert_eq!(rec.get_ttl(), min_ttl);
+            assert_eq!(rec.ttl(), min_ttl);
 
-            rec.ttl(240);
+            rec.set_ttl(240);
             adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(u32::max_value() as u64)));
-            assert_eq!(rec.get_ttl(), min_ttl);
-            rec.ttl(240);
+            assert_eq!(rec.ttl(), min_ttl);
+            rec.set_ttl(240);
 
             // Using `Duration::from_secs(u64::max_value())` will silently overflow and give us
             // incorrect result, so we test with `u64::max_value() >> 1` here.
             // Ref: https://github.com/rust-lang/rust/issues/32070
             adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(u64::max_value() >> 1)));
-            assert_eq!(rec.get_ttl(), min_ttl);
+            assert_eq!(rec.ttl(), min_ttl);
         }).unwrap();
     }
 }

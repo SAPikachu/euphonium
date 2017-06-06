@@ -21,7 +21,7 @@ use validator::{DnssecValidator, SubqueryResolver, DummyValidator};
 struct QueryHash(Name, RecordType, DNSClass);
 impl<'a> From<&'a Query> for QueryHash {
     fn from(q: &'a Query) -> Self {
-        QueryHash(q.get_name().clone(), q.get_query_type(), q.get_query_class())
+        QueryHash(q.name().clone(), q.query_type(), q.query_class())
     }
 }
 
@@ -101,15 +101,15 @@ impl RecursiveResolver {
         &self.state.parent.config
     }
     fn query(&self) -> Result<Message> {
-        let name = self.state.query.get_name();
-        let is_ds = self.state.query.get_query_type() == RecordType::DS && !name.is_root();
+        let name = self.state.query.name();
+        let is_ds = self.state.query.query_type() == RecordType::DS && !name.is_root();
         let nscache = self.get_ns_cache();
         let ns = if is_ds {
             // Start from the first ancestor zone that is known to serve DS response, which
             // ensures not to be the same zone as `name`
             nscache.lookup_recursive_with_filter(&name.base_name(), |ent| {
                 let mut q = self.state.query.clone();
-                q.name(ent.get_zone().clone());
+                q.set_name(ent.get_zone().clone());
                 self.get_cache().lookup(&q, |ent| ent.is_authenticated()).unwrap_or(false)
             })
         } else {
@@ -120,13 +120,13 @@ impl RecursiveResolver {
     fn query_ns_domain(&self, auth_zone: &Name, ns: &Name) -> Result<Message> {
         debug!("Querying IP of NS {} in zone {}", ns, auth_zone);
         let mut query = Query::new();
-        query.name(ns.clone())
-        .query_type(RecordType::A)
-        .query_class(DNSClass::IN);
+        query.set_name(ns.clone())
+        .set_query_type(RecordType::A)
+        .set_query_class(DNSClass::IN);
         // TODO: IPv6
         let result = try!(self.resolve_next(&query));
-        let ips = result.get_answers().iter().filter_map(|x| match *x.get_rdata() {
-            RData::A(ref address) => Some((IpAddr::V4(*address), x.get_ttl())),
+        let ips = result.answers().iter().filter_map(|x| match *x.rdata() {
+            RData::A(ref address) => Some((IpAddr::V4(*address), x.ttl())),
             _ => None,
         }).collect_vec();
         self.get_ns_cache().update(auth_zone, ips.iter().map(|&(ip, ttl)| (ip, ns.clone(), ttl as u64)));
@@ -214,20 +214,20 @@ impl RecursiveResolver {
         try!(self.maybe_stop());
         let result = try!(self.query_ns_impl(ns));
         try!(self.maybe_stop());
-        if result.get_response_code() == ResponseCode::NXDomain &&
-            result.get_answers().len() == 1 &&
-            result.get_answers()[0].get_rr_type() == RecordType::CNAME
+        if result.response_code() == ResponseCode::NXDomain &&
+            result.answers().len() == 1 &&
+            result.answers()[0].rr_type() == RecordType::CNAME
         {
             // https://serverfault.com/questions/157775/can-a-valid-cname-response-contain-an-nxdomain-status
             return self.handle_normal_resp(result);
         }
-        if result.get_response_code() != ResponseCode::NoError {
+        if result.response_code() != ResponseCode::NoError {
             return Ok(result);
         }
-        if !result.get_answers().is_empty() {
+        if !result.answers().is_empty() {
             return self.handle_normal_resp(result);
         }
-        if result.get_name_servers().iter().any(|x| x.get_rr_type() == RecordType::SOA) {
+        if result.name_servers().iter().any(|x| x.rr_type() == RecordType::SOA) {
             // Domain exists, but no record
             return Ok(result)
         }
@@ -235,20 +235,20 @@ impl RecursiveResolver {
     }
     #[allow(similar_names)]
     fn find_unresolved_cnames(&self, msg: &Message) -> Option<Vec<Record>> {
-        let mut name = self.state.query.get_name();
-        let query_type = self.state.query.get_query_type();
+        let mut name = self.state.query.name();
+        let query_type = self.state.query.query_type();
         let mut unresolved_cnames = Vec::<&Record>::new();
         let trust_cname_hinting = self.get_config().query.trust_cname_hinting;
         loop {
             let cnames = {
-                let matched_records = || msg.get_answers().iter()
-                .filter(|x| x.get_name() == name);
+                let matched_records = || msg.answers().iter()
+                .filter(|x| x.name() == name);
                 let have_real_record = matched_records()
-                .any(|x| x.get_rr_type() == query_type);
+                .any(|x| x.rr_type() == query_type);
                 if have_real_record && trust_cname_hinting {
                     return None;
                 }
-                matched_records().filter(|x| x.get_rr_type() == RecordType::CNAME)
+                matched_records().filter(|x| x.rr_type() == RecordType::CNAME)
                 .collect_vec()
             };
             if cnames.is_empty() {
@@ -263,7 +263,7 @@ impl RecursiveResolver {
             if !trust_cname_hinting {
                 break
             }
-            name = match *cnames[0].get_rdata() {
+            name = match *cnames[0].rdata() {
                 RData::CNAME(ref cname) => cname,
                 _ => panic!("Record type doesn't match RData"),
             };
@@ -276,35 +276,35 @@ impl RecursiveResolver {
     }
     #[allow(similar_names)]
     fn handle_normal_resp(&self, msg: Message) -> Result<Message> {
-        if self.state.query.get_query_type() == RecordType::CNAME {
+        if self.state.query.query_type() == RecordType::CNAME {
             // No need to resolve CNAME chain(?)
             return Ok(msg);
         }
         if let Some(unresolved_cnames) = self.find_unresolved_cnames(&msg) {
             let final_record = &unresolved_cnames[unresolved_cnames.len() - 1];
-            let next_name = match *final_record.get_rdata() {
+            let next_name = match *final_record.rdata() {
                 RData::CNAME(ref cname) => cname.clone(),
                 _ => panic!("Record type doesn't match RData"),
             };
             if !self.register_query(QueriedItem::CNAME(next_name.clone())) {
                 return Err(ErrorKind::LostRace.into());
             }
-            debug!("[{}] CNAME referral: {}", self.state.query.get_name(), next_name);
+            debug!("[{}] CNAME referral: {}", self.state.query.name(), next_name);
             let mut next_query = self.state.query.clone();
-            next_query.name(next_name);
+            next_query.set_name(next_name);
             match self.resolve_next(&next_query) {
                 Err(e) => {
                     warn!("Failed to resolve CNAME {} for {}: {:?}",
-                          next_query.get_name(), self.state.query.as_disp(), e);
+                          next_query.name(), self.state.query.as_disp(), e);
                     return Ok(msg);
                 },
                 Ok(next_msg) => {
                     let mut new_msg = msg.without_rr();
-                    new_msg.response_code(next_msg.get_response_code());
+                    new_msg.set_response_code(next_msg.response_code());
                     unresolved_cnames.iter().cloned().foreach(|x| {
                         new_msg.add_answer(x);
                     });
-                    next_msg.get_answers().iter().cloned().foreach(|x| {
+                    next_msg.answers().iter().cloned().foreach(|x| {
                         new_msg.add_answer(x);
                     });
                     return Ok(new_msg);
@@ -314,15 +314,15 @@ impl RecursiveResolver {
         Ok(msg)
     }
     fn handle_ns_referral(&self, msg: Message) -> Result<Message> {
-        let mut ns_domains : HashMap<_, _> = msg.get_name_servers().iter()
-        .filter_map(|x| match *x.get_rdata() {
-            RData::NS(ref nsdname) => Some((nsdname.clone(), x.get_name().clone())),
+        let mut ns_domains : HashMap<_, _> = msg.name_servers().iter()
+        .filter_map(|x| match *x.rdata() {
+            RData::NS(ref nsdname) => Some((nsdname.clone(), x.name().clone())),
             _ => None,
         })
         .collect();
         if ns_domains.is_empty() {
             debug!("Nameserver returned NOERROR and empty answer: {}, {}",
-                   msg.get_queries()[0].as_disp(), msg.as_disp());
+                   msg.queries()[0].as_disp(), msg.as_disp());
             return Ok(msg);
         }
         if ns_domains.values().dedup().count() > 1 {
@@ -332,21 +332,21 @@ impl RecursiveResolver {
             return Err(ErrorKind::InsaneNsReferral.into());
         }
         let referred_zone = ns_domains.values().next().unwrap().clone();
-        if !referred_zone.zone_of(self.state.query.get_name()) {
+        if !referred_zone.zone_of(self.state.query.name()) {
             warn!("Nameserver returned NS records for incorrect zone");
             return Err(ErrorKind::InsaneNsReferral.into());
         }
-        debug!("[{}] NS referral: {}", self.state.query.get_name(), referred_zone);
+        debug!("[{}] NS referral: {}", self.state.query.name(), referred_zone);
 
         // Get IPs of all NSes.
-        let ns_items: Vec<_> = msg.get_additional().iter()
-        .filter(|x| ns_domains.contains_key(x.get_name()))
-        .filter_map(|x| match *x.get_rdata() {
+        let ns_items: Vec<_> = msg.additionals().iter()
+        .filter(|x| ns_domains.contains_key(x.name()))
+        .filter_map(|x| match *x.rdata() {
             RData::A(ref address) => Some((
-                IpAddr::V4(*address), x.get_name().clone(), x.get_ttl(),
+                IpAddr::V4(*address), x.name().clone(), x.ttl(),
             )),
             RData::AAAA(ref address) => Some((
-                IpAddr::V6(*address), x.get_name().clone(), x.get_ttl(),
+                IpAddr::V6(*address), x.name().clone(), x.ttl(),
             )),
             _ => None,
         })

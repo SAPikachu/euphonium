@@ -17,47 +17,47 @@ use resolver::{RcResolver};
 /// This function should never fail, otherwise we have a panic
 fn handle_request(resolver: RcResolver, msg: Message, should_truncate: bool) -> Result<Vec<u8>> {
     let mut ret : Message = msg.new_resp();
-    ret.recursion_available(true);
+    ret.set_recursion_available(true);
     let mut have_dnssec = false;
-    if let Some(req_edns) = msg.get_edns() {
+    if let Some(req_edns) = msg.edns() {
         let mut resp_edns = Edns::new();
         resp_edns.set_version(EDNS_VER);
-        have_dnssec = req_edns.is_dnssec_ok();
+        have_dnssec = req_edns.dnssec_ok();
         resp_edns.set_dnssec_ok(have_dnssec);
-        resp_edns.set_max_payload(max(512, req_edns.get_max_payload()));
+        resp_edns.set_max_payload(max(512, req_edns.max_payload()));
         ret.set_edns(resp_edns);
-        if req_edns.get_version() > EDNS_VER {
-            warn!("Got EDNS version {}", req_edns.get_version());
-            ret.response_code(ResponseCode::BADVERS);
+        if req_edns.version() > EDNS_VER {
+            warn!("Got EDNS version {}", req_edns.version());
+            ret.set_response_code(ResponseCode::BADVERS);
             return ret.to_bytes();
         }
     }
-    if msg.get_queries().len() != 1 || msg.get_op_code() != OpCode::Query {
+    if msg.queries().len() != 1 || msg.op_code() != OpCode::Query {
         // For simplicity, only support one question
-        ret.response_code(ResponseCode::Refused);
+        ret.set_response_code(ResponseCode::Refused);
         return ret.to_bytes();
     }
-    if msg.get_queries()[0].get_query_class() != DNSClass::IN {
-        ret.response_code(ResponseCode::NotImp);
+    if msg.queries()[0].query_class() != DNSClass::IN {
+        ret.set_response_code(ResponseCode::NotImp);
         return ret.to_bytes();
     }
     match resolver.resolve(&mut ret) {
         Ok(_) => { /* Message is filled with answers */ },
         Err(e) => {
             warn!("Resolver returned error: {:?}", e);
-            ret.response_code(ResponseCode::ServFail);
+            ret.set_response_code(ResponseCode::ServFail);
         },
     };
     if !have_dnssec {
         ret = ret.strip_dnssec_records();
     } else {
-        let is_authenticated = ret.get_answers().iter()
-        .chain(ret.get_name_servers())
-        .any(|rec| rec.get_rr_type() == RecordType::RRSIG);
-        ret.authentic_data(is_authenticated);
+        let is_authenticated = ret.answers().iter()
+        .chain(ret.name_servers())
+        .any(|rec| rec.rr_type() == RecordType::RRSIG);
+        ret.set_authentic_data(is_authenticated);
     }
     let bytes = try!(ret.to_bytes());
-    if should_truncate && bytes.len() > (msg.get_max_payload() as usize) {
+    if should_truncate && bytes.len() > (msg.max_payload() as usize) {
         return ret.truncate().to_bytes();
     }
     Ok(bytes)

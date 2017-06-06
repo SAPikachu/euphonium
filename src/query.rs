@@ -32,18 +32,18 @@ pub enum EdnsMode {
 
 fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_mode: EdnsMode, validator: &mut TValidator) -> Result<Message> where TTransport: DnsMsgTransport, TValidator: ResponseValidator {
     let mut msg : Message = Message::new();
-    msg.message_type(MessageType::Query);
-    msg.id(rand::random());
-    msg.op_code(OpCode::Query);
-    msg.recursion_desired(true);
+    msg.set_message_type(MessageType::Query);
+    msg.set_id(rand::random());
+    msg.set_op_code(OpCode::Query);
+    msg.set_recursion_desired(true);
     if edns_mode != EdnsMode::Disabled {
         let mut edns = Edns::new();
         edns.set_version(EDNS_VER);
         edns.set_max_payload(EDNS_MAX_PAYLOAD);
         validator.prepare_msg(&mut msg, &mut edns);
-        let cd = msg.is_checking_disabled();
+        let cd = msg.checking_disabled();
         msg.set_edns(edns);
-        msg.checking_disabled(cd);
+        msg.set_checking_disabled(cd);
     }
     msg.add_query(q);
     debug!("[{}] {}", transport, msg.as_disp());
@@ -72,27 +72,27 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
         });
         if ! resp.is_resp_for(&msg) {
             warn!("[{}][{}] Invalid response for {}: {:?}",
-                  transport, msg.get_id(), msg.as_disp(), resp);
+                  transport, msg.id(), msg.as_disp(), resp);
             continue;
         }
         if !validator.is_valid(&resp) {
-            if resp.is_truncated() {
+            if resp.truncated() {
                 return Err(ErrorKind::TruncatedBogus(msg).into());
             }
             warn!("[{}][{}] Rejected by validator for {}: {}",
-                  transport, msg.get_id(), msg.as_disp(), resp.as_disp());
+                  transport, msg.id(), msg.as_disp(), resp.as_disp());
             last_bogus_msg = Some(resp);
             continue;
         }
-        if resp.get_response_code() == ResponseCode::FormErr &&
+        if resp.response_code() == ResponseCode::FormErr &&
             edns_mode == EdnsMode::Enabled
         {
             // Maybe the server doesn't implement EDNS?
             return query_core(
-                msg.get_queries()[0].clone(), transport, EdnsMode::Disabled, validator,
+                msg.queries()[0].clone(), transport, EdnsMode::Disabled, validator,
             );
         }
-        debug!("[{}] {} -> {}", transport, resp.get_queries()[0].as_disp(), resp.as_disp());
+        debug!("[{}] {} -> {}", transport, resp.queries()[0].as_disp(), resp.as_disp());
         return Ok(resp);
     }
 }
@@ -125,15 +125,15 @@ pub fn query_with_validator<T: ResponseValidator>(q: Query, addr: IpAddr, timeou
     };
     match query_core(q, transport.bound(Some(&target)), EdnsMode::Enabled, validator) {
         Ok(msg) => {
-            if msg.is_truncated() {
+            if msg.truncated() {
                 // Try TCP
-                Ok(query_tcp!(&msg.get_queries()[0]).unwrap_or(msg))
+                Ok(query_tcp!(&msg.queries()[0]).unwrap_or(msg))
             } else {
                 Ok(msg)
             }
         },
         Err(Error::Query(ErrorKind::TruncatedBogus(msg))) => {
-            query_tcp!(&msg.get_queries()[0])
+            query_tcp!(&msg.queries()[0])
         },
         Err(e) => Err(e),
     }
@@ -148,7 +148,7 @@ pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>)
         let mut should_return = futures.is_empty();
         match result {
             Ok(ref msg) => {
-                match msg.get_response_code() {
+                match msg.response_code() {
                     ResponseCode::ServFail |
                     ResponseCode::NotImp |
                     ResponseCode::Refused => {
@@ -186,9 +186,9 @@ mod tests {
     fn simple_query() {
         mioco_config_start(|| {
             let mut q = Query::new();
-            q.name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
             let result = query(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5)).unwrap();
-            assert!(result.get_answers().len() > 0);
+            assert!(result.answers().len() > 0);
         }).unwrap();
     }
 }

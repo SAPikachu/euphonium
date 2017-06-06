@@ -156,7 +156,7 @@ impl RcResolver {
                     };
                     let updated = match RecursiveResolver::resolve(&q, res.clone().into()) {
                         Ok(msg) => [ResponseCode::NoError, ResponseCode::NXDomain]
-                                   .contains(&msg.get_response_code()),
+                                   .contains(&msg.response_code()),
                         Err(_) => false,
                     };
                     if !updated {
@@ -192,14 +192,14 @@ impl RcResolver {
         query_multiple_handle_futures(&mut futures)
     }
     pub fn resolve(&self, msg: &mut Message) -> Result<()> {
-        debug_assert!(msg.get_queries().len() == 1);
-        debug_assert!(msg.get_answers().is_empty());
-        debug_assert!(msg.get_name_servers().is_empty());
+        debug_assert!(msg.queries().len() == 1);
+        debug_assert!(msg.answers().is_empty());
+        debug_assert!(msg.name_servers().is_empty());
         let cache_hit = self.cache.fill_response(msg);
         if cache_hit {
             return Ok(());
         }
-        let resp = try!(self.resolve_internal(&msg.get_queries()[0]));
+        let resp = try!(self.resolve_internal(&msg.queries()[0]));
         msg.copy_resp_from(&resp);
         Ok(())
     }
@@ -223,9 +223,9 @@ mod tests {
             let config = Config::default();
             let resolver = RcResolver::new(config);
             let mut q = Query::new();
-            q.name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
             let result = resolver.resolve_recursive(q).unwrap();
-            assert!(result.get_answers().len() > 0);
+            assert!(result.answers().len() > 0);
         }).unwrap();
     }
     #[test]
