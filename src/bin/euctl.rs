@@ -1,10 +1,10 @@
 #![feature(plugin)]
 
-#![cfg_attr(feature = "clippy", plugin(clippy))]
-#![cfg_attr(not(feature = "clippy"), allow(unknown_lints))]
 #![plugin(docopt_macros)]
 
+extern crate serde;
 extern crate serde_json;
+#[macro_use] extern crate serde_derive;
 extern crate docopt;
 extern crate rustc_serialize;
 extern crate env_logger;
@@ -31,7 +31,7 @@ const VERSION_FULL: &'static str = concat!(
 
 fn main() {
     env_logger::init().expect("What the ...?");
-    let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).decode()
+    let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).deserialize()
     .unwrap_or_else(|e| e.exit());
     let mut sock_path = args.flag_sock.clone();
     if sock_path.is_empty() {

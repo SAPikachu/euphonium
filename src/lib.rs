@@ -1,8 +1,6 @@
 #![feature(plugin, custom_derive)]
 
-#![cfg_attr(feature = "clippy", plugin(clippy))]
-#![cfg_attr(not(feature = "clippy"), allow(unknown_lints))]
-#![plugin(serde_macros)]
+#![allow(unknown_lints)]
 #![plugin(docopt_macros)]
 
 #![recursion_limit="128"]
@@ -19,6 +17,7 @@ extern crate itertools;
 #[macro_use] extern crate custom_derive;
 #[macro_use] extern crate newtype_derive;
 extern crate serde;
+#[macro_use] extern crate serde_derive;
 extern crate serde_yaml;
 extern crate serde_json;
 extern crate treebitmap;
@@ -46,11 +45,14 @@ mod validator;
 
 use std::net::{SocketAddr};
 
+use docopt::Docopt;
+use serde::de;
+
 use resolver::RcResolver;
 use serve::{serve_tcp, serve_udp};
 use config::Config;
 
-docopt!(Args, "
+docopt!(Args derive Debug, "
 Usage: euphonium [options]
        euphonium (--help|--version)
 
@@ -90,7 +92,7 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
 }
 pub fn main() {
     env_logger::init().expect("What the ...?");
-    let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).decode()
+    let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).deserialize()
     .unwrap_or_else(|e| e.exit());
     let config = Config::from_file(&args.flag_config)
     .unwrap_or_else(|e| {

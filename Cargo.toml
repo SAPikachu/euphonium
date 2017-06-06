@@ -13,40 +13,31 @@ version = "0.1.0"
 byteorder = "0.5.*"
 chrono = "0.2.22"
 custom_derive = "0.1.*"
-docopt = "0.6.80"
-docopt_macros = "0.6.84"
+docopt = { git = "https://github.com/docopt/docopt.rs.git" }
+docopt_macros = { git = "https://github.com/docopt/docopt.rs.git" }
 env_logger = "*"
 itertools = "*"
 log = "*"
 mio = "*"
+mioco = "*"
 newtype_derive = "0.1.*"
 parking_lot = "^0.2.5"
 quick-error = "1.0.*"
-rand = "0.3.*"
-rustc-serialize = "^0.3.19"
-serde_json = "^0.7.0"
-serde_macros = "^0.7"
-serde_yaml = "^0.2"
-treebitmap = "^0.2"
+rand = "*"
+rustc-serialize = "*"
+serde = "^1.0"
+serde_json = "*"
+serde_yaml = "^0.7"
+serde_derive = "*"
+treebitmap = { git = "https://github.com/sopium/treebitmap.git" }
 trust-dns = "^0.7.1"
-yaml-rust = "^0.3.3"
+yaml-rust = "*"
 openssl = "^0.7.14"
 lazy_static = "*"
-timebomb = { git = "https://github.com/SAPikachu/timebomb.git" }
+timebomb = { git = "https://github.com/SAPikachu/timebomb.git" } 
 
-[dependencies.clippy]
-optional = true
-version = "*"
-
-[dependencies.mioco]
-git = "https://github.com/dpc/mioco.git"
-
-[dependencies.serde]
-features = ["nightly"]
-version = "^0.7"
-
-[features]
-default = ["clippy"]
+[replace]
+"serde_yaml:0.7.0" = { git = "https://github.com/SAPikachu/serde-yaml.git" }
 
 [lib]
 name = "eulib"

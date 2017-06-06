@@ -9,10 +9,9 @@ use std::io::{Read};
 use std::collections::btree_map::Entry as BtEntry;
 
 use serde_yaml;
-use serde_yaml::value::Value as Yaml;
 use serde::{Deserialize, Deserializer};
 use serde::de::Error as DesError;
-use yaml_rust::YamlLoader;
+use yaml_rust::{Yaml, YamlLoader, YamlEmitter};
 
 use utils::IpSet;
 
@@ -30,28 +29,28 @@ impl<TStorage, TValue> From<TValue> for ProxiedValue<TStorage, TValue> {
         ProxiedValue(val, PhantomData)
     }
 }
-pub trait FromStorage<TStorage> {
-    fn from_storage<TDes: ?Sized + Deserializer>(storage: TStorage) -> Result<Self, TDes::Error> where Self: Sized;
+pub trait FromStorage<'de, TStorage> {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: TStorage) -> Result<Self, TDes::Error> where Self: Sized;
 }
-impl<TStorage, TValue> Deserialize for ProxiedValue<TStorage, TValue>
-    where TStorage: Deserialize,
-          TValue: FromStorage<TStorage>,
+impl<'de, TStorage, TValue> Deserialize<'de> for ProxiedValue<TStorage, TValue>
+    where TStorage: Deserialize<'de>,
+          TValue: FromStorage<'de, TStorage>,
 {
-    fn deserialize<D>(deserializer: &mut D) -> Result<Self, D::Error>
-        where D: Deserializer,
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where D: Deserializer<'de>,
     {
         let val = try!(TStorage::deserialize(deserializer));
         let result = try!(TValue::from_storage::<D>(val));
         Ok(ProxiedValue(result, PhantomData))
     }
 }
-impl FromStorage<u32> for Duration {
-    fn from_storage<TDes: ?Sized + Deserializer>(storage: u32) -> Result<Self, TDes::Error> {
+impl<'de> FromStorage<'de, u32> for Duration {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: u32) -> Result<Self, TDes::Error> {
         Ok(Duration::from_secs(storage as u64))
     }
 }
-impl FromStorage<String> for Arc<IpSet> {
-    fn from_storage<TDes: ?Sized + Deserializer>(storage: String) -> Result<Self, TDes::Error> {
+impl<'de> FromStorage<'de, String> for Arc<IpSet> {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: String) -> Result<Self, TDes::Error> {
         IpSet::from_file(&storage)
         .map(Arc::new)
         .map_err(|e| TDes::Error::custom(format!(
@@ -63,11 +62,11 @@ custom_derive! {
     #[derive(Clone, Copy, Debug, NewtypeDisplay, NewtypeFrom, NewtypeDeref)]
     pub struct PermissionBits(u32);
 }
-impl FromStorage<String> for PermissionBits {
-    fn from_storage<TDes: ?Sized + Deserializer>(storage: String) -> Result<Self, TDes::Error> {
+impl<'de> FromStorage<'de, String> for PermissionBits {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: String) -> Result<Self, TDes::Error> {
         u32::from_str_radix(&storage, 8)
         .map(Into::into)
-        .map_err(|_| TDes::Error::invalid_value(&format!(
+        .map_err(|_| TDes::Error::custom(&format!(
             "Invalid permission bits: {}", storage,
         )))
     }
@@ -181,7 +180,12 @@ impl Config {
             ));
         }
         let merged = merge_config_values(parsed_yaml_docs.into_iter().next().unwrap());
-        serde_yaml::from_value(merged)
+        let mut out_str = String::new();
+        {
+            let mut emitter = YamlEmitter::new(&mut out_str);
+            emitter.dump(&merged).unwrap(); // dump the YAML object to a String
+        }
+        serde_yaml::from_str(&out_str)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))
     }
 }
@@ -189,6 +193,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::IpAddr;
 
     #[test]
     fn test_default_config() {
@@ -206,9 +211,9 @@ forwarders:
         "#;
         let config = Config::from_str(config_file).unwrap();
         let default_config = Config::default();
-        assert_eq!(config.serve.ip, "1.1.1.1".parse().unwrap());
+        assert_eq!(config.serve.ip, "1.1.1.1".parse::<IpAddr>().unwrap());
         assert_eq!(config.serve.port, default_config.serve.port);
         assert_eq!(config.forwarders.len(), 1);
-        assert_eq!(config.forwarders[0].servers[0], "1.2.3.4".parse().unwrap());
+        assert_eq!(config.forwarders[0].servers[0], "1.2.3.4".parse::<IpAddr>().unwrap());
     }
 }
