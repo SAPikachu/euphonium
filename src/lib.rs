@@ -1,5 +1,4 @@
-#![feature(plugin, custom_derive)]
-
+#![feature(plugin)]
 #![allow(unknown_lints)]
 #![plugin(docopt_macros)]
 
@@ -14,7 +13,7 @@ extern crate rand;
 #[macro_use] extern crate log;
 extern crate byteorder;
 extern crate itertools;
-#[macro_use] extern crate custom_derive;
+#[macro_use] extern crate macro_attr;
 #[macro_use] extern crate newtype_derive;
 extern crate serde;
 #[macro_use] extern crate serde_derive;

@@ -12,12 +12,12 @@ version = "0.1.0"
 [dependencies]
 byteorder = "0.5.*"
 chrono = "0.2.22"
-custom_derive = "0.1.*"
 docopt = { git = "https://github.com/docopt/docopt.rs.git" }
 docopt_macros = { git = "https://github.com/docopt/docopt.rs.git" }
 env_logger = "*"
 itertools = "*"
 log = "*"
+macro-attr = "*"
 mio = "*"
 mioco = "*"
 newtype_derive = "0.1.*"

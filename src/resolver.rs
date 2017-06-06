@@ -38,12 +38,12 @@ pub struct Resolver {
     forwarders: Vec<Arc<ForwardingResolver>>,
     control_server: Mutex<ControlServer>,
 }
-custom_derive! {
-    #[derive(Clone, NewtypeFrom, NewtypeDeref)]
+macro_attr! {
+    #[derive(Clone, NewtypeFrom!, NewtypeDeref!)]
     pub struct RcResolver(Arc<Resolver>);
 }
-custom_derive! {
-    #[derive(Clone, NewtypeFrom)]
+macro_attr! {
+    #[derive(Clone, NewtypeFrom!)]
     pub struct RcResolverWeak(Weak<Resolver>);
 }
 

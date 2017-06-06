@@ -58,8 +58,8 @@ impl<'de> FromStorage<'de, String> for Arc<IpSet> {
         )))
     }
 }
-custom_derive! {
-    #[derive(Clone, Copy, Debug, NewtypeDisplay, NewtypeFrom, NewtypeDeref)]
+macro_attr! {
+    #[derive(Clone, Copy, Debug, NewtypeDisplay!, NewtypeFrom!, NewtypeDeref!)]
     pub struct PermissionBits(u32);
 }
 impl<'de> FromStorage<'de, String> for PermissionBits {
