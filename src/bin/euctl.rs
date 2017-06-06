@@ -1,37 +1,40 @@
-#![feature(plugin)]
-
-#![plugin(docopt_macros)]
-
 extern crate serde;
 extern crate serde_json;
 #[macro_use] extern crate serde_derive;
 extern crate docopt;
-extern crate rustc_serialize;
 extern crate env_logger;
 extern crate eulib;
 extern crate mioco;
 
 use std::io::Write;
 
+use docopt::Docopt;
 use mioco::unix::UnixSocket;
 
 use eulib::utils::{JsonRpcRequest, JsonRpcResponse};
 use eulib::config::Config;
 
-docopt!(Args, "
+const USAGE: &'static str = "
 Usage: euctl [-s SOCK] <command>
        euctl (--help|--version)
 
 Options:
     -s SOCK, --sock SOCK      Specify where the control socket is located at. If not specified, default location will be used.
-");
+";
+#[derive(Debug, Deserialize)]
+struct Args {
+    flag_sock: String,
+    arg_command: String,
+}
 const VERSION_FULL: &'static str = concat!(
     "euctl ", env!("CARGO_PKG_VERSION"),
 );
 
 fn main() {
     env_logger::init().expect("What the ...?");
-    let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).deserialize()
+    let args: Args = Docopt::new(USAGE).unwrap()
+    .version(Some(VERSION_FULL.into()))
+    .deserialize()
     .unwrap_or_else(|e| e.exit());
     let mut sock_path = args.flag_sock.clone();
     if sock_path.is_empty() {

@@ -1,6 +1,4 @@
-#![feature(plugin)]
 #![allow(unknown_lints)]
-#![plugin(docopt_macros)]
 
 #![recursion_limit="128"]
 
@@ -20,7 +18,6 @@ extern crate serde;
 extern crate serde_yaml;
 extern crate serde_json;
 extern crate treebitmap;
-extern crate rustc_serialize;
 extern crate docopt;
 extern crate parking_lot;
 extern crate chrono;
@@ -28,6 +25,9 @@ extern crate yaml_rust;
 extern crate openssl;
 #[macro_use] extern crate lazy_static;
 extern crate timebomb;
+
+#[cfg(test)]
+extern crate rustc_serialize;
 
 pub mod utils;
 mod transport;
@@ -51,14 +51,19 @@ use resolver::RcResolver;
 use serve::{serve_tcp, serve_udp};
 use config::Config;
 
-docopt!(Args derive Debug, "
+const USAGE: &'static str = "
 Usage: euphonium [options]
        euphonium (--help|--version)
 
 Options:
     -c CONFIG, --config CONFIG      Specify configuration file [default: euphonium.yaml]
     -t, --test                      Test configuration and then exit immediately
-");
+";
+#[derive(Debug, Deserialize)]
+struct Args {
+    flag_config: String,
+    flag_test: bool,
+}
 const VERSION_FULL: &'static str = concat!(
     env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"),
 );
@@ -91,7 +96,9 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
 }
 pub fn main() {
     env_logger::init().expect("What the ...?");
-    let args: Args = Args::docopt().version(Some(VERSION_FULL.into())).deserialize()
+    let args: Args = Docopt::new(USAGE).unwrap()
+    .version(Some(VERSION_FULL.into()))
+    .deserialize()
     .unwrap_or_else(|e| e.exit());
     let config = Config::from_file(&args.flag_config)
     .unwrap_or_else(|e| {
