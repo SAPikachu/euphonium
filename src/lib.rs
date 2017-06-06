@@ -21,13 +21,15 @@ extern crate treebitmap;
 extern crate docopt;
 extern crate parking_lot;
 extern crate chrono;
+extern crate time;
 extern crate yaml_rust;
 extern crate openssl;
 #[macro_use] extern crate lazy_static;
-extern crate timebomb;
 
 #[cfg(test)]
 extern crate rustc_serialize;
+#[cfg(test)]
+extern crate timebomb;
 
 pub mod utils;
 mod transport;

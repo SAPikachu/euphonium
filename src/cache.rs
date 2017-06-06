@@ -12,7 +12,7 @@ use trust_dns::rr::{Name, RecordType, Record, DNSClass};
 use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
 use parking_lot::Mutex as PlMutex;
 use itertools::Itertools;
-use chrono::duration::Duration as ChDuration;
+use time::Duration as ChDuration;
 
 use utils::{MessageExt, AsDisplay};
 use config::Config;

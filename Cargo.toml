@@ -11,31 +11,32 @@ version = "0.1.0"
 
 [dependencies]
 byteorder = "0.5.*"
-chrono = "0.2.22"
+chrono = { version = "0.3", features = ["serde"] }
 docopt = "^0.7.0"
 env_logger = "*"
 itertools = "*"
 log = "*"
 macro-attr = "*"
-mio = "*"
+mio = "^0.5.1"
 mioco = "*"
 newtype_derive = "0.1.*"
-parking_lot = "^0.2.5"
-quick-error = "1.0.*"
+parking_lot = "^0.4"
+quick-error = "^1.2"
 rand = "*"
 serde = "^1.0"
 serde_json = "*"
 serde_yaml = "^0.7"
 serde_derive = "*"
+time = "*"
 treebitmap = { git = "https://github.com/sopium/treebitmap.git" }
 trust-dns = "^0.7.1"
 yaml-rust = "*"
 openssl = "^0.7.14"
 lazy_static = "*"
-timebomb = { git = "https://github.com/SAPikachu/timebomb.git" } 
 
 [dev-dependencies]
 rustc-serialize = "*"
+timebomb = { git = "https://github.com/SAPikachu/timebomb.git" } 
 
 [replace]
 "serde_yaml:0.7.0" = { git = "https://github.com/SAPikachu/serde-yaml.git" }
