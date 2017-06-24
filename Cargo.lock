@@ -816,7 +816,6 @@ source = "git+https://github.com/sopium/treebitmap.git#fb5f2235c9841d2a4acb4f0b6
 [[package]]
 name = "trust-dns"
 version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "backtrace 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "chrono 0.2.25 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -836,6 +835,12 @@ dependencies = [
  "tokio-openssl 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "untrusted 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "trust-dns"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+replace = "trust-dns 0.10.2"
 
 [[package]]
 name = "unicode-segmentation"

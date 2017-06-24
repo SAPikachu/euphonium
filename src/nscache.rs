@@ -145,7 +145,8 @@ impl NsCache {
         loop {
             match guard.lookup(&cur) {
                 Some(x) if !x.is_expired() && !x.is_empty() => {
-                    debug!("Found NS for {} at {}", name, cur);
+                    use itertools::Itertools;
+                    debug!("Found NS for {} at {}, ({})", name, cur, x.to_addrs().iter().map(|addr| addr.to_string()).join(", "));
                     if cur.is_root() || predicate(x) {
                         return x.to_addrs();
                     }

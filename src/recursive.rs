@@ -88,6 +88,7 @@ impl RecursiveResolverState {
 }
 #[derive(Clone)]
 pub struct RecursiveResolver {
+    is_root: bool,
     state: Arc<RecursiveResolverState>,
 }
 impl RecursiveResolver {
@@ -214,24 +215,26 @@ impl RecursiveResolver {
         try!(self.maybe_stop());
         let result = try!(self.query_ns_impl(ns));
         try!(self.maybe_stop());
-        if result.response_code() == ResponseCode::NXDomain &&
-            result.answers().len() == 1 &&
-            result.answers()[0].rr_type() == RecordType::CNAME
-        {
-            // https://serverfault.com/questions/157775/can-a-valid-cname-response-contain-an-nxdomain-status
-            return self.handle_normal_resp(result);
-        }
-        if result.response_code() != ResponseCode::NoError {
-            return Ok(result);
-        }
-        if !result.answers().is_empty() {
-            return self.handle_normal_resp(result);
-        }
-        if result.name_servers().iter().any(|x| x.rr_type() == RecordType::SOA) {
-            // Domain exists, but no record
-            return Ok(result)
-        }
-        self.handle_ns_referral(result)
+        (|| {
+            if result.response_code() == ResponseCode::NXDomain &&
+                result.answers().len() == 1 &&
+                result.answers()[0].rr_type() == RecordType::CNAME
+            {
+                // https://serverfault.com/questions/157775/can-a-valid-cname-response-contain-an-nxdomain-status
+                return self.handle_normal_resp(result);
+            }
+            if result.response_code() != ResponseCode::NoError {
+                return Ok(result);
+            }
+            if !result.answers().is_empty() {
+                return self.handle_normal_resp(result);
+            }
+            if result.name_servers().iter().any(|x| x.rr_type() == RecordType::SOA) {
+                // Domain exists, but no record
+                return Ok(result)
+            }
+            self.handle_ns_referral(result)
+        })().map(|msg| { self.update_cache(&msg); msg })
     }
     #[allow(similar_names)]
     fn find_unresolved_cnames(&self, msg: &Message) -> Option<Vec<Record>> {
@@ -367,15 +370,17 @@ impl RecursiveResolver {
         )
     }
     fn update_cache(&self, msg: &Message) {
-        self.get_cache().update_from_message(msg, RecordSource::Recursive);
+        let got_best_cache = self.get_cache().update_from_message(msg, RecordSource::Recursive);
+        if got_best_cache && self.is_root {
+            self.state.is_done.store(true, Ordering::Release);
+        }
     }
     pub fn resolve(q: &Query, parent: RcResolver) -> Result<Message> {
         let resolver = RecursiveResolver {
+            is_root: true,
             state: Arc::new(RecursiveResolverState::new(q, parent)),
         };
         let ret = try!(resolver.query());
-        resolver.state.is_done.store(true, Ordering::Release);
-        resolver.update_cache(&ret);
         Ok(ret)
     }
     fn resolve_next(&self, q: &Query) -> Result<Message> {
@@ -460,10 +465,10 @@ impl RecursiveResolver {
     }
     fn resolve_next_impl(&self, q: &Query) -> Result<Message> {
         let resolver = RecursiveResolver {
+            is_root: false,
             state: Arc::new(try!(self.state.new_inner(q))),
         };
         let ret = try!(resolver.query());
-        self.update_cache(&ret);
         Ok(ret)
     }
 }

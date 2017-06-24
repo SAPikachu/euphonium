@@ -209,6 +209,10 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 if key.algorithm() != sig.algorithm() {
                     continue;
                 }
+                let key_tag = Self::calculate_dnskey_tag(&key);
+                if key_tag != sig.key_tag() {
+                    continue;
+                }
                 match key.verify_rrsig(rr_name, rr_class, sig, rrset) {
                     Ok(_) => {
                         trace!("Verified {} {:?} with {:?} (signer: {})",
@@ -216,11 +220,12 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                         return Ok(ValidationResult::Authenticated);
                     },
                     Err(e) => {
-                        debug!("Failed to verify {} {:?} ({}) with ({:?}, {}, {}), \
+                        debug!("{:?}", key);
+                        debug!("Failed to verify {} {:?} ({}) with ({:?}, {}), \
                                 signer: {}, {}",
                                rr_name, rr_type, rrset.len(),
-                               key.algorithm(), sig.key_tag(),
-                               Self::calculate_dnskey_tag(&key), signer_name, e);
+                               key.algorithm(), key_tag,
+                               signer_name, e);
                     }
                 };
             }

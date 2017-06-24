@@ -276,22 +276,28 @@ impl CachePlain {
     fn ttl_mode(&self, source: RecordSource) -> TtlMode {
         match source {
             RecordSource::Pinned => TtlMode::Original,
-            RecordSource::Forwarder => TtlMode::Fixed(1),
+            RecordSource::Forwarder => TtlMode::Fixed(10),
             RecordSource::Recursive => TtlMode::Relative(SystemTime::now()),
         }
     }
-    pub fn update(&mut self, msg: &Message, source: RecordSource) {
+    pub fn update(&mut self, msg: &Message, source: RecordSource) -> bool {
         self.ensure_cache_limit();
         assert!(msg.queries().len() == 1);
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
         if !accepted_responses.contains(&msg.response_code()) {
-            return;
+            return true;
         }
         let key: Key = (&msg.queries()[0]).into();
         if let Some(existing) = self.records.get(&key) {
-            if !existing.is_expired() && existing.source >= source {
+            if existing.source > source {
                 // Existing record is more preferable
-                return;
+                return false;
+            }
+            if existing.source == source {
+                if (existing.message.name_servers().len() > 0 || existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME)) && !existing.is_expired() {
+                    // Existing record is more preferable
+                    return false;
+                }
             }
         }
         let all_records = msg.answers().iter()
@@ -323,13 +329,13 @@ impl CachePlain {
             ),
             shared: self.shared.clone(),
         });
+        true
     }
 }
 pub struct Cache {
     inst: CacheInst,
     global_expiration_counter: Arc<AtomicUsize>,
 }
-pub type RcCache = Arc<Cache>;
 impl Cache {
     pub fn new(notifier: Sender<Query>, config: Arc<Config>) -> Self {
         let counter = Arc::new(AtomicUsize::default());
@@ -364,7 +370,7 @@ impl Cache {
     pub fn gc(&self) {
         self.operate(|x| x.gc());
     }
-    pub fn update_from_message(&self, msg: &Message, source: RecordSource) {
+    pub fn update_from_message(&self, msg: &Message, source: RecordSource) -> bool {
         if cfg!(debug_assertions) {
             assert!(msg.op_code() == OpCode::Query);
             assert!(msg.message_type() == MessageType::Response);
@@ -374,7 +380,7 @@ impl Cache {
                 assert!(msg.answers().iter().any(|x| x.name() == name));
             }
         }
-        self.operate(|x| x.update(msg, source));
+        self.operate(|x| x.update(msg, source))
     }
     pub fn expire_all(&self) {
         self.global_expiration_counter.fetch_add(1, Ordering::Relaxed);

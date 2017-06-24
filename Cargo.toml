@@ -40,6 +40,7 @@ timebomb = { git = "https://github.com/SAPikachu/timebomb.git" }
 [replace]
 "serde_yaml:0.7.0" = { git = "https://github.com/SAPikachu/serde-yaml.git" }
 "docopt:0.7.0" = { git = "https://github.com/docopt/docopt.rs.git" }
+"trust-dns:0.10.2" = { path = "../trust-dns/client" }
 
 [lib]
 name = "eulib"
