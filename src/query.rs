@@ -23,7 +23,7 @@ pub enum ErrorKind {
     TruncatedBogus(Message),
     ValidationFailure(Message),
 }
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug, Copy, Clone)]
 pub enum EdnsMode {
     Disabled,
     Enabled,

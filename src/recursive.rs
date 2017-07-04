@@ -198,7 +198,7 @@ impl RecursiveResolver {
         try!(self.maybe_stop());
         let result = try!(self.query_ns_impl(ns));
         try!(self.maybe_stop());
-        (|| {
+        {
             if result.response_code() == ResponseCode::NXDomain &&
                 result.answers().len() == 1 &&
                 result.answers()[0].rr_type() == RecordType::CNAME
@@ -217,7 +217,7 @@ impl RecursiveResolver {
                 return Ok(result)
             }
             self.handle_ns_referral(result)
-        })().map(|msg| { self.update_cache(&msg); msg })
+        }.map(|msg| { self.update_cache(&msg); msg })
     }
     #[allow(similar_names)]
     fn find_unresolved_cnames(&self, msg: &Message) -> Option<Vec<Record>> {

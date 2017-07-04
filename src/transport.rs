@@ -66,7 +66,7 @@ impl<'a, T> fmt::Display for BoundDnsTransport<'a, T> where T: DnsTransport + 'a
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}({})", T::transport_name(), match self.addr {
             None => "any".into(),
-            Some(ref x) => format!("{}", **x),
+            Some(x) => format!("{}", *x),
         })
     }
 }
@@ -119,7 +119,7 @@ macro_rules! impl_udp_transport {
             assert!(addr.is_some());
             match self.send(buf, addr.unwrap()) {
                 Ok(len) => {
-                    assert!(len == buf.len());
+                    assert_eq!(len, buf.len());
                     Ok(())
                 },
                 Err(e) => Err(e),

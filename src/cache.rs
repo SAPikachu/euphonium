@@ -21,7 +21,7 @@ use config::Config;
 pub struct Key(Name, RecordType);
 impl<'a> From<&'a Query> for Key {
     fn from(q: &'a Query) -> Self {
-        assert!(q.query_class() == DNSClass::IN);
+        debug_assert_eq!(q.query_class(), DNSClass::IN);
         Key(q.name().clone(), q.query_type())
     }
 }
@@ -95,7 +95,7 @@ impl IsGcEligible for RecordEntry {
             // Delete all expired entries that are not useful
             return true;
         }
-        if &SystemTime::now() > &(exp + *self.shared.config.cache.cache_retention_time) {
+        if SystemTime::now() > (exp + *self.shared.config.cache.cache_retention_time) {
             return true;
         }
         false
@@ -227,7 +227,7 @@ pub trait CacheCommonGc<TKey, TValue> : CacheCommon<TKey, TValue>
 {
     fn gc_impl(&mut self, mode: GcMode) -> usize {
         let removed_keys = self.get_records().iter()
-        .filter(|&(_, ref entry)| entry.is_gc_eligible(mode))
+        .filter(|&(_, entry)| entry.is_gc_eligible(mode))
         .map(|(key, _)| key.clone())
         .collect_vec();
         removed_keys.iter().foreach(|k| { self.get_mut_records().remove(k); });
@@ -284,7 +284,7 @@ impl CachePlain {
     /// false: Further query may get better result
     pub fn update(&mut self, msg: &Message, source: RecordSource) -> bool {
         self.ensure_cache_limit();
-        assert!(msg.queries().len() == 1);
+        assert_eq!(msg.queries().len(), 1);
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
         if !accepted_responses.contains(&msg.response_code()) {
             return false;
@@ -296,11 +296,11 @@ impl CachePlain {
                 return true;
             }
             if existing.source == source && !existing.is_expired() {
-                if existing.message.name_servers().len() > 0 || existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME) {
+                if !existing.message.name_servers().is_empty() || existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME) {
                     // Existing record is more preferable
                     return true;
                 }
-                if msg.name_servers().len() == 0 {
+                if msg.name_servers().is_empty() {
                     return false;
                 }
             }
@@ -334,7 +334,7 @@ impl CachePlain {
             ),
             shared: self.shared.clone(),
         });
-        msg.name_servers().len() > 0
+        !msg.name_servers().is_empty()
     }
 }
 pub struct Cache {
@@ -377,9 +377,9 @@ impl Cache {
     }
     pub fn update_from_message(&self, msg: &Message, source: RecordSource) -> bool {
         if cfg!(debug_assertions) {
-            assert!(msg.op_code() == OpCode::Query);
-            assert!(msg.message_type() == MessageType::Response);
-            assert!(msg.queries().len() == 1);
+            assert_eq!(msg.op_code(), OpCode::Query);
+            assert_eq!(msg.message_type(), MessageType::Response);
+            assert_eq!(msg.queries().len(), 1);
             if !msg.answers().is_empty() {
                 let name = msg.queries()[0].name();
                 assert!(msg.answers().iter().any(|x| x.name() == name));

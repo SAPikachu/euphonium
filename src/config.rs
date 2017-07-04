@@ -1,3 +1,4 @@
+use std;
 use std::net::{IpAddr};
 use std::time::Duration;
 use std::marker::PhantomData;
@@ -7,6 +8,7 @@ use std::io;
 use std::fs::File;
 use std::io::{Read};
 use std::collections::btree_map::Entry as BtEntry;
+use std::str::FromStr;
 
 use serde_yaml;
 use serde::{Deserialize, Deserializer};
@@ -168,7 +170,10 @@ impl Config {
         try!(file.read_to_string(&mut buffer));
         Self::from_str(&buffer)
     }
-    pub fn from_str(content: &str) -> io::Result<Self> {
+}
+impl FromStr for Config {
+    type Err = io::Error;
+    fn from_str(content: &str) -> std::result::Result<Self, Self::Err> {
         let parsed_yaml_docs = try!(
             YamlLoader::load_from_str(content)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))

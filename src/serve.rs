@@ -15,7 +15,7 @@ use query::{EDNS_VER};
 use resolver::{RcResolver};
 
 /// This function should never fail, otherwise we have a panic
-fn handle_request(resolver: RcResolver, msg: Message, should_truncate: bool) -> Result<Vec<u8>> {
+fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -> Result<Vec<u8>> {
     let mut ret : Message = msg.new_resp();
     ret.set_recursion_available(true);
     let mut have_dnssec = false;
@@ -97,7 +97,7 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
             let sch_req = sch.clone();
             let res = resolver.clone();
             mioco::spawn(move || {
-                let resp = handle_request(res, msg, TSend::should_truncate()).expect("handle_request should not return error");
+                let resp = handle_request(&res, &msg, TSend::should_truncate()).expect("handle_request should not return error");
                 sch_req.send((resp, addr)).expect("Result pipe should not break here");
             });
         }

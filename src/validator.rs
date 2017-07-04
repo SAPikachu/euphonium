@@ -243,7 +243,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
     }
     // Largely stolen from trust-dns
     fn verify_rrsigs(&self, msg: &Message) -> Result<ValidationResult> {
-        debug_assert!(msg.queries().len() == 1);
+        debug_assert_eq!(msg.queries().len(), 1);
         let q = &msg.queries()[0];
         let query_name = q.name();
         let query_type = q.query_type();
@@ -387,7 +387,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             let mut wildcard_query = q.clone();
             let wildcard_name = cur_base.prepend_label(Arc::new("*".into()));
             wildcard_query.set_name(wildcard_name);
-            if let Some(_) = Self::find_matching_nsec(&wildcard_query, rrset) {
+            if Self::find_matching_nsec(&wildcard_query, rrset).is_some() {
                 return ValidationResult::Authenticated;
             };
             if cur_base == zone {
@@ -397,6 +397,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         }
         ValidationResult::Bogus
     }
+    #[cfg_attr(feature = "cargo-clippy", allow(collapsible_if))]
     fn find_matching_nsec<'a, 'b>(q: &'a Query, rrset: &'b[&'b Record]) -> Option<&'b Record> {
         let qname = q.name();
         debug!("find_matching_nsec, {}, {:?}", qname, q.query_type());
@@ -439,6 +440,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         let hash = nsec3.hash_algorithm().hash(nsec3.salt(), &name.to_lowercase(), nsec3.iterations())?;
         Ok(base32hex::encode(&hash))
     }
+    #[cfg_attr(feature = "cargo-clippy", allow(collapsible_if))]
     fn verify_nsec3(q: &Query, rrset: &[&Record]) -> ValidationResult {
         if let Ok(Some(_)) = Self::find_matching_nsec3(q, rrset, NsecMatchType::Owned) {
             return ValidationResult::Authenticated;
@@ -494,6 +496,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             return ValidationResult::Authenticated;
         }
     }
+    #[cfg_attr(feature = "cargo-clippy", allow(collapsible_if))]
     fn find_matching_nsec3<'a, 'b>(q: &'a Query, rrset: &'b[&'b Record], match_type: NsecMatchType) -> Result<Option<&'b Record>> {
         let qname = q.name();
         debug!("find_matching_nsec3, {}, {:?}, {:?}", qname, q.query_type(), match_type);
@@ -527,7 +530,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             // base32hex always return uppercased string
             let record_name_hash = r.name()[0].to_uppercase();
             trace!("Record name: {}", record_name_hash);
-            debug_assert!(hashed_qname.len() == record_name_hash.len());
+            debug_assert_eq!(hashed_qname.len(), record_name_hash.len());
             if *hashed_qname == record_name_hash {
                 if !find_owned {
                     return None;
@@ -553,7 +556,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             }
             let next_name_hash = base32hex::encode(nsec.next_hashed_owner_name());
             trace!("Next name: {}", next_name_hash);
-            debug_assert!(hashed_qname.len() == next_name_hash.len());
+            debug_assert_eq!(hashed_qname.len(), next_name_hash.len());
             if record_name_hash == next_name_hash {
                 warn!("Invalid NSEC3 record (name == next_name): {:?}", r);
                 return None;
@@ -576,7 +579,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             debug_assert!(false);
             return Err(e);
         }
-        return Ok(ret);
+        Ok(ret)
     }
 }
 impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {

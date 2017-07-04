@@ -192,7 +192,7 @@ impl RcResolver {
         query_multiple_handle_futures(&mut futures)
     }
     pub fn resolve(&self, msg: &mut Message) -> Result<()> {
-        debug_assert!(msg.queries().len() == 1);
+        debug_assert_eq!(msg.queries().len(), 1);
         debug_assert!(msg.answers().is_empty());
         debug_assert!(msg.name_servers().is_empty());
         let cache_hit = self.cache.fill_response(msg);

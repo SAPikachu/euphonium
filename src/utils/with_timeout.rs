@@ -20,7 +20,7 @@ fn invoke_with_timeout<T, F, TRet>(inner: &mut T, rw: mioco::RW, timer: &mut Tim
             inner.select_add(rw);
         }
         mioco::select_wait();
-        if let Some(_) = timer.try_read() {
+        if timer.try_read().is_some() {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "Timed out"));
         };
         match try_fn(inner) {
@@ -93,7 +93,7 @@ impl<T> WithTimeoutState<T> where T: Evented {
             Some(_) => None,
             None => Some(self.create_timer()),
         };
-        invoke_with_timeout(&mut self.inner, rw, timer.as_mut().or(self.timer.as_mut()).unwrap(), try_fn)
+        invoke_with_timeout(&mut self.inner, rw, self.timer.as_mut().or_else(|| timer.as_mut()).unwrap(), try_fn)
     }
 }
 impl WithTimeoutState<UdpSocket> {
