@@ -8,8 +8,8 @@ A DNS server written in Rust. Currently in early-alpha stage. This is mostly a t
 * Recursive resolver
 * Aggresive caching
 * Mix forwarder and recursive resolver to offer fast and correct result
+* DNSSEC
 
 ## Planned features and ideas
 
-* DNSSEC
 * Detect GFW-poisoned domains by DNSSEC?
