@@ -1,4 +1,13 @@
 language: rust
+dist: trusty
+sudo: required
+
+addons:
+  apt:
+    sources:
+    - sourceline: 'ppa:0k53d-karl-f830m/openssl'
+    packages:
+    - libssl-dev
 
 rust:
   - stable
