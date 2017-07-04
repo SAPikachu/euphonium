@@ -1,7 +1,7 @@
 use std::sync::{Arc};
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicIsize, Ordering, AtomicBool};
+use std::sync::atomic::{Ordering, AtomicBool};
 
 use mioco::sync::Mutex;
 use mioco::sync::mpsc::{channel, Sender};
@@ -27,9 +27,9 @@ impl<'a> From<&'a Query> for QueryHash {
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 enum QueriedItem {
-    NS(IpAddr),
+    NS(QueryHash, IpAddr),
     CNAME(Name),
-    NSDomain(Name),
+    NSDomain(Name, Name),
     Query(QueryHash),
 }
 enum SubqueryState {
@@ -40,10 +40,9 @@ enum SubqueryState {
     Error,
 }
 struct RecursiveResolverState {
-    queried_items: Mutex<HashSet<QueriedItem>>,
+    queried_items: Arc<Mutex<HashSet<QueriedItem>>>,
     query: Query,
     parent: RcResolver,
-    query_limit: AtomicIsize,
     is_done: Arc<AtomicBool>,
     subqueries: Arc<Mutex<HashMap<QueryHash, SubqueryState>>>,
 }
@@ -52,35 +51,18 @@ impl RecursiveResolverState {
         let mut queried_items = HashSet::<QueriedItem>::new();
         queried_items.insert(QueriedItem::Query(q.into()));
         RecursiveResolverState {
-            queried_items: Mutex::new(queried_items),
+            queried_items: Arc::new(Mutex::new(queried_items)),
             query: q.clone(),
             parent: parent,
-            query_limit: AtomicIsize::new(256),
             is_done: Arc::default(),
             subqueries: Arc::new(Mutex::new(Default::default())),
         }
     }
     fn new_inner(&self, q: &Query) -> Result<Self> {
-        let queried_items = {
-            let guard = self.queried_items.lock().unwrap();
-            let mut items = HashSet::<QueriedItem>::new();
-            // Exclude NS and NSDomain, since we are querying a different domain
-            items.extend(
-                guard.iter()
-                .filter(|x| if let QueriedItem::NS(_) = **x { false } else { true })
-                .filter(|x| if let QueriedItem::NSDomain(_) = **x { false } else { true })
-                .map(|x| (*x).clone())
-            );
-            if !items.insert(QueriedItem::Query(q.into())) {
-                return Err(ErrorKind::AlreadyQueried.into());
-            }
-            items
-        };
         Ok(RecursiveResolverState {
-            queried_items: Mutex::new(queried_items),
+            queried_items: self.queried_items.clone(),
             query: q.clone(),
             parent: self.parent.clone(),
-            query_limit: AtomicIsize::new(self.query_limit.load(Ordering::Relaxed)),
             is_done: self.is_done.clone(),
             subqueries: self.subqueries.clone(),
         })
@@ -134,7 +116,7 @@ impl RecursiveResolver {
         self.query_ns_multiple(ips.iter().map(|&(ip, _)| ip), None)
     }
     fn query_ns_domain_future(&self, auth_zone: &Name, ns: Name) -> Option<Future<Result<Message>>> {
-        if !self.register_query(QueriedItem::NSDomain(ns.clone())) {
+        if !self.register_query(QueriedItem::NSDomain(auth_zone.clone(), ns.clone())) {
             return None;
         }
         let inst = self.clone();
@@ -171,16 +153,17 @@ impl RecursiveResolver {
             trace!("Already queried {:?}", item);
             return false;
         }
-        if self.state.query_limit.fetch_sub(1, Ordering::Relaxed) <= 0 {
+        if guard.len() >= 2048 {
             debug_assert!(false);
             warn!("Already queried too many servers for {:?}, bug or attack?", self.state.query);
             return false;
         }
+        trace!("register_query: {:?}", item);
         guard.insert(item);
         true
     }
     fn query_ns_future(&self, ns: &IpAddr) -> Option<Future<Result<Message>>> {
-        if !self.register_query(QueriedItem::NS(*ns)) {
+        if !self.register_query(QueriedItem::NS((&self.state.query).into(), *ns)) {
             return None;
         }
         let inst = self.clone();

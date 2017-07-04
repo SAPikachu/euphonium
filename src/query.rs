@@ -41,9 +41,7 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
         edns.set_version(EDNS_VER);
         edns.set_max_payload(EDNS_MAX_PAYLOAD);
         validator.prepare_msg(&mut msg, &mut edns);
-        let cd = msg.checking_disabled();
         msg.set_edns(edns);
-        msg.set_checking_disabled(cd);
     }
     msg.add_query(q);
     debug!("[{}] {}", transport, msg.as_disp());

@@ -177,7 +177,7 @@ impl RcResolver {
             debug!("Resolver is dropped, cache update coroutine is exiting");
         });
     }
-    fn resolve_recursive(self, q: Query) -> Result<Message> {
+    pub fn resolve_recursive(self, q: Query) -> Result<Message> {
         RecursiveResolver::resolve(&q, self)
     }
     fn resolve_internal(&self, q: &Query) -> Result<Message> {

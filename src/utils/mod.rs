@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 use mioco::udp::UdpSocket;
 use trust_dns::op::{Message, Query, MessageType};
-use trust_dns::error::{DecodeError, EncodeError};
+use trust_dns::error::{DecodeError, EncodeError, DnsSecError};
 use trust_dns::rr::{RecordType, Record, Name};
 use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
 use itertools::Itertools;
@@ -55,6 +55,10 @@ quick_error! {
         }
         Query(kind: QueryErrorKind) {
             from()
+        }
+        Dnssec(err: DnsSecError) {
+            from()
+            description(err.description())
         }
         Other(msg: &'static str, extra: Option<String>) {
             description(msg)

@@ -24,6 +24,7 @@ extern crate chrono;
 extern crate time;
 extern crate yaml_rust;
 #[macro_use] extern crate lazy_static;
+extern crate data_encoding;
 
 #[cfg(test)]
 extern crate rustc_serialize;
@@ -46,7 +47,6 @@ mod validator;
 use std::net::{SocketAddr};
 
 use docopt::Docopt;
-use serde::de;
 
 use resolver::RcResolver;
 use serve::{serve_tcp, serve_udp};

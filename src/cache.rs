@@ -280,22 +280,27 @@ impl CachePlain {
             RecordSource::Recursive => TtlMode::Relative(SystemTime::now()),
         }
     }
+    /// true: Got best result at specified source, should stop further query
+    /// false: Further query may get better result
     pub fn update(&mut self, msg: &Message, source: RecordSource) -> bool {
         self.ensure_cache_limit();
         assert!(msg.queries().len() == 1);
         let accepted_responses = [ResponseCode::NoError, ResponseCode::NXDomain];
         if !accepted_responses.contains(&msg.response_code()) {
-            return true;
+            return false;
         }
         let key: Key = (&msg.queries()[0]).into();
         if let Some(existing) = self.records.get(&key) {
             if existing.source > source {
                 // Existing record is more preferable
-                return false;
+                return true;
             }
-            if existing.source == source {
-                if (existing.message.name_servers().len() > 0 || existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME)) && !existing.is_expired() {
+            if existing.source == source && !existing.is_expired() {
+                if existing.message.name_servers().len() > 0 || existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME) {
                     // Existing record is more preferable
+                    return true;
+                }
+                if msg.name_servers().len() == 0 {
                     return false;
                 }
             }
@@ -329,7 +334,7 @@ impl CachePlain {
             ),
             shared: self.shared.clone(),
         });
-        true
+        msg.name_servers().len() > 0
     }
 }
 pub struct Cache {

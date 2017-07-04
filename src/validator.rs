@@ -1,17 +1,19 @@
 #![cfg_attr(debug_assertions, allow(unused_imports, dead_code))]
 
+use std::sync::Arc;
 use std::collections::HashSet;
 use std::time::{UNIX_EPOCH, Duration};
 
 use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
 use trust_dns::rr::{DNSClass, RecordType, Record, RData, Name};
-use trust_dns::rr::rdata::{SIG, DNSKEY};
-use trust_dns::rr::dnssec::{Signer, TrustAnchor, Verifier};
+use trust_dns::rr::rdata::{SIG, DNSKEY, NSEC3};
+use trust_dns::rr::dnssec::{Signer, TrustAnchor, Verifier, Nsec3HashAlgorithm};
 use trust_dns::serialize::binary::{BinEncoder, BinSerializable};
 use itertools::Itertools;
+use data_encoding::base32hex;
 
 use resolver::RcResolver;
-use utils::Result;
+use utils::{Result, Error};
 use recursive::RecursiveResolver;
 
 lazy_static! {
@@ -33,9 +35,9 @@ impl ResponseValidator for DummyValidator {
     fn is_valid(&mut self, _: &Message) -> bool {
         true
     }
-    fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns) { }
+    fn prepare_msg(&mut self, _: &mut Message, _: &mut Edns) { }
 }
-pub struct DummyValidatorWithDnssec;
+struct DummyValidatorWithDnssec;
 impl ResponseValidator for DummyValidatorWithDnssec {
     fn is_valid(&mut self, _: &Message) -> bool {
         true
@@ -55,6 +57,12 @@ impl SubqueryResolver for RcResolver {
 }
 pub struct DnssecValidator<T: SubqueryResolver> {
     resolver: T,
+}
+#[derive(Eq, PartialEq, Debug)]
+enum NsecMatchType {
+    Owned,
+    Covered,
+    All,
 }
 impl<T: SubqueryResolver> DnssecValidator<T> {
     pub fn new(resolver: T) -> Self {
@@ -169,14 +177,14 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             _ => None,
         }).collect_vec())
     }
-    fn verify_rrsig(&self, rrset: &[Record], rrsigs: &[SIG]) -> Result<ValidationResult> {
+    fn verify_rrsig<'a, 'b, 'c>(&'a self, rrset: &'b [Record], rrsigs: &'c [SIG]) -> Result<Option<&'c SIG>> {
         assert!(!rrset.is_empty());
         let rr_name = rrset[0].name();
         let rr_class = rrset[0].dns_class();
         let rr_type = rrset[0].rr_type();
         if rrsigs.is_empty() {
             debug!("No RRSIG for {} {:?} {:?}", rr_name, rr_class, rr_type);
-            return Ok(ValidationResult::Bogus);
+            return Ok(None);
         }
         debug_assert!(rrset.iter().all(|x| x.rr_type() == rr_type));
         debug_assert!(rrset.iter().all(|x| x.name() == rr_name));
@@ -217,7 +225,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                     Ok(_) => {
                         trace!("Verified {} {:?} with {:?} (signer: {})",
                                rr_name, rr_type, key.algorithm(), signer_name);
-                        return Ok(ValidationResult::Authenticated);
+                        return Ok(Some(sig));
                     },
                     Err(e) => {
                         debug!("{:?}", key);
@@ -231,7 +239,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             }
         }
         debug!("No valid RRSIG for {} {:?} {:?}", rr_name, rr_class, rr_type);
-        Ok(ValidationResult::Bogus)
+        Ok(None)
     }
     // Largely stolen from trust-dns
     fn verify_rrsigs(&self, msg: &Message) -> Result<ValidationResult> {
@@ -239,8 +247,8 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         let q = &msg.queries()[0];
         let query_name = q.name();
         let query_type = q.query_type();
-        let rrsigs = msg.answers().iter()
-        .chain(msg.name_servers())
+        let rrset = msg.answers().iter().chain(msg.name_servers()).collect_vec();
+        let rrsigs = rrset.iter()
         .filter(|rr| rr.rr_type() == RecordType::RRSIG)
         .collect_vec();
 
@@ -259,34 +267,32 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                     // Secure zone, but we got no RRSIG
                     return Ok(ValidationResult::Bogus);
                 }
-                let have_nsec = ds_resp.name_servers().iter().any(
+                let have_nsec = ds_resp.name_servers().iter().chain(ds_resp.answers()).any(
                     |rec| match *rec.rdata() {
-                        RData::NSEC(ref nsec) => true, // TODO
-                        RData::NSEC3(ref nsec3) => true, // TODO
+                        RData::NSEC(ref nsec) => *rec.name() == name && !nsec.type_bit_maps().contains(&RecordType::DS) && !nsec.type_bit_maps().contains(&RecordType::SOA),
                         _ => false,
                     }
-                );
+                ) || Self::verify_nsec3(&ds_resp.queries()[0], &ds_resp.name_servers().iter().collect_vec()) == ValidationResult::Authenticated;
                 if have_nsec {
                     // Insecure zone
-                    break;
+                    return Ok(ValidationResult::NonAuthenticated);
                 }
                 name = name.base_name();
             }
-            return Ok(ValidationResult::NonAuthenticated);
+            return Ok(ValidationResult::Bogus);
         }
         // Group the record sets by name and type
         let mut rrset_types: HashSet<(Name, RecordType)> = HashSet::new();
-        msg.answers().iter()
-        .chain(msg.name_servers())
+        rrset.iter()
         .filter(|rr| rr.rr_type() != RecordType::RRSIG)
         .map(|rr| (rr.name().clone(), rr.rr_type()))
         .foreach(|rr| { rrset_types.insert(rr); });
 
+        let mut wildcard_num_labels = Option::<u8>::default();
         for (name, rr_type) in rrset_types {
-            let rrset = msg.answers().iter()
-            .chain(msg.name_servers())
+            let rrset_type = rrset.iter()
             .filter(|rr| rr.rr_type() == rr_type && *rr.name() == name)
-            .cloned()
+            .map(|rr| (*rr).clone())
             .collect_vec();
             let rrsig = rrsigs.iter()
             .filter(|rr| *rr.name() == name)
@@ -304,7 +310,14 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
                 // NS records are not signed in referral
                 continue;
             }
-            if try!(self.verify_rrsig(&rrset, &rrsig)) != ValidationResult::Authenticated {
+            if let Some(sig) = self.verify_rrsig(&rrset_type, &rrsig)? {
+                if name == *query_name &&
+                    [query_type, RecordType::CNAME].contains(&rr_type) &&
+                    sig.num_labels() < query_name.num_labels()
+                {
+                    wildcard_num_labels = Some(sig.num_labels());
+                }
+            } else {
                 return Ok(ValidationResult::Bogus);
             }
         }
@@ -314,6 +327,19 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             rec.name() == query_name
         });
         if have_answer {
+            if wildcard_num_labels.is_some() && Self::find_matching_nsec(q, &rrset).is_none() {
+                let next_closest = query_name.trim_to(wildcard_num_labels.unwrap() as usize + 1);
+                if next_closest.is_root() {
+                    return Ok(ValidationResult::Bogus);
+                }
+                let mut nsec3_query = q.clone();
+                nsec3_query.set_name(next_closest);
+                return if let Ok(Some(_)) = Self::find_matching_nsec3(&nsec3_query, &rrset, NsecMatchType::Covered) {
+                    Ok(ValidationResult::Authenticated)
+                } else {
+                    Ok(ValidationResult::Bogus)
+                };
+            }
             return Ok(ValidationResult::Authenticated);
         }
         let is_secure_delegation = msg.name_servers().iter().any(|rec| {
@@ -322,18 +348,242 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         if is_secure_delegation {
             return Ok(ValidationResult::Authenticated);
         }
-        // TODO: Verify NSEC/NSEC3
-        // TODO: Handle wildcard (RFC7129)
-        Ok(ValidationResult::Authenticated)
+        if Self::verify_nsec(q, &rrset) == ValidationResult::Authenticated {
+            return Ok(ValidationResult::Authenticated);
+        };
+        Ok(Self::verify_nsec3(q, &rrset))
     }
-    fn verify_nsec(&self, q: &Query, nsec_rrset: &[Record]) -> bool {
-        unimplemented!()
+    fn verify_nsec(q: &Query, rrset: &[&Record]) -> ValidationResult {
+        let nsec_rec = match Self::find_matching_nsec(q, rrset) {
+            Some(r) => r,
+            None => return ValidationResult::Bogus,
+        };
+        if q.name() == nsec_rec.name() {
+            return ValidationResult::Authenticated;
+        }
+        let nsec_data = if let RData::NSEC(ref data) = *nsec_rec.rdata() {
+            data
+        } else {
+            panic!("We should only get an NSEC record here");
+        };
+        // Prove no wildcard exists
+        let zone = {
+            let mut zone = q.name().base_name();
+            let name1 = nsec_rec.name();
+            let name2 = nsec_data.next_domain_name();
+            loop {
+                let should_break = (zone == *name1 || zone.zone_of(name1)) &&
+                                   (zone == *name2 || zone.zone_of(name2));
+                if should_break {
+                    break;
+                }
+                assert!(!zone.is_root());
+                zone = zone.base_name();
+            }
+            zone
+        };
+        let mut cur_base = q.name().base_name();
+        loop {
+            let mut wildcard_query = q.clone();
+            let wildcard_name = cur_base.prepend_label(Arc::new("*".into()));
+            wildcard_query.set_name(wildcard_name);
+            if let Some(_) = Self::find_matching_nsec(&wildcard_query, rrset) {
+                return ValidationResult::Authenticated;
+            };
+            if cur_base == zone {
+                break;
+            }
+            cur_base = cur_base.base_name();
+        }
+        ValidationResult::Bogus
+    }
+    fn find_matching_nsec<'a, 'b>(q: &'a Query, rrset: &'b[&'b Record]) -> Option<&'b Record> {
+        let qname = q.name();
+        debug!("find_matching_nsec, {}, {:?}", qname, q.query_type());
+        rrset.iter().filter_map(|r| {
+            let nsec = if let RData::NSEC(ref data) = *r.rdata() {
+                data
+            } else {
+                return None;
+            };
+            if r.dns_class() != q.query_class() {
+                return None;
+            }
+            if r.name() == qname {
+                return if !nsec.type_bit_maps().contains(&q.query_type()) && !nsec.type_bit_maps().contains(&RecordType::CNAME) {
+                    Some(r)
+                } else {
+                    None
+                };
+            }
+            if r.name() == nsec.next_domain_name() {
+                warn!("Invalid NSEC record (name == next_name): {:?}", r);
+                return None;
+            }
+            if r.name() < nsec.next_domain_name() {
+                if qname > r.name() && qname < nsec.next_domain_name() {
+                    Some(r)
+                } else {
+                    None
+                }
+            } else {
+                if qname < r.name() && qname > nsec.next_domain_name() {
+                    Some(r)
+                } else {
+                    None
+                }
+            }
+        }).map(|r| *r).next()
+    }
+    fn hash_nsec3(name: &Name, nsec3: &NSEC3) -> Result<String> {
+        let hash = nsec3.hash_algorithm().hash(nsec3.salt(), &name.to_lowercase(), nsec3.iterations())?;
+        Ok(base32hex::encode(&hash))
+    }
+    fn verify_nsec3(q: &Query, rrset: &[&Record]) -> ValidationResult {
+        if let Ok(Some(_)) = Self::find_matching_nsec3(q, rrset, NsecMatchType::Owned) {
+            return ValidationResult::Authenticated;
+        };
+        let mut cur_q = q.clone();
+        loop {
+            let removed_part = cur_q.name()[0].clone();
+            let base_name = cur_q.name().base_name();
+            cur_q.set_name(base_name.clone());
+            cur_q.set_query_type(RecordType::OPT); // qtype is not relevant here, set to an impossible type to ensure skipping qtype check
+            // Closest encloser
+            match Self::find_matching_nsec3(&cur_q, rrset, NsecMatchType::Owned) {
+                Ok(None) | Err(_) => {
+                    if cur_q.name().is_root() {
+                        return ValidationResult::Bogus;
+                    }
+                    continue;
+                },
+                Ok(Some(_)) => {
+                    if q.query_type() == RecordType::DS {
+                        // Already validated in find_matching_nsec3
+                        return ValidationResult::Authenticated;
+                    }
+                },
+            };
+            // Next-closest encloser
+            cur_q.set_name(base_name.prepend_label(Arc::new(removed_part)));
+            cur_q.set_query_type(q.query_type());
+            let is_opt_out;
+            match Self::find_matching_nsec3(&cur_q, rrset, NsecMatchType::Covered) {
+                Ok(None) | Err(_) => return ValidationResult::Bogus,
+                Ok(Some(rec)) => {
+                    match *rec.rdata() {
+                        RData::NSEC3(ref nsec) => {
+                            is_opt_out = nsec.opt_out();
+                            if q.query_type() == RecordType::DS {
+                                if !is_opt_out {
+                                    return ValidationResult::Bogus;
+                                }
+                            }
+                        },
+                        _ => panic!("Shouldn't reach here"),
+                    };
+                },
+            };
+            // Wildcard
+            if q.query_type() != RecordType::DS && q.name()[0] != "*" && !is_opt_out {
+                cur_q.set_name(base_name.prepend_label(Arc::new("*".into())));
+                if Self::find_matching_nsec3(&cur_q, rrset, NsecMatchType::All).unwrap_or_default().is_none() {
+                    return ValidationResult::Bogus;
+                }
+            }
+            return ValidationResult::Authenticated;
+        }
+    }
+    fn find_matching_nsec3<'a, 'b>(q: &'a Query, rrset: &'b[&'b Record], match_type: NsecMatchType) -> Result<Option<&'b Record>> {
+        let qname = q.name();
+        debug!("find_matching_nsec3, {}, {:?}, {:?}", qname, q.query_type(), match_type);
+        let mut hashed_qname_cache = Option::<Result<String>>::default();
+        let (find_owned, find_covered) = match match_type {
+            NsecMatchType::Owned => (true, false),
+            NsecMatchType::Covered => (false, true),
+            NsecMatchType::All => (true, true),
+        };
+        let ret = rrset.iter().filter_map(|r| {
+            let nsec = if let RData::NSEC3(ref data) = *r.rdata() {
+                data
+            } else {
+                return None;
+            };
+            if r.dns_class() != q.query_class() {
+                return None;
+            }
+            let base_name = r.name().base_name();
+            if !base_name.zone_of(qname) {
+                return None;
+            }
+            if hashed_qname_cache.is_none() {
+                hashed_qname_cache = Some(Self::hash_nsec3(qname, nsec));
+            }
+            let hashed_qname = match *hashed_qname_cache.as_ref().unwrap() {
+                Ok(ref n) => n,
+                Err(_) => return None,
+            };
+            trace!("{} = {}", qname, hashed_qname);
+            // base32hex always return uppercased string
+            let record_name_hash = r.name()[0].to_uppercase();
+            trace!("Record name: {}", record_name_hash);
+            debug_assert!(hashed_qname.len() == record_name_hash.len());
+            if *hashed_qname == record_name_hash {
+                if !find_owned {
+                    return None;
+                }
+                if nsec.type_bit_maps().contains(&q.query_type()) {
+                    return None;
+                }
+                if nsec.type_bit_maps().contains(&RecordType::CNAME) {
+                    return None;
+                }
+                if q.query_type() == RecordType::DS {
+                    if !nsec.type_bit_maps().contains(&RecordType::NS) {
+                        return None;
+                    }
+                    if nsec.type_bit_maps().contains(&RecordType::SOA) {
+                        return None;
+                    }
+                }
+                return Some(r);
+            }
+            if !find_covered {
+                return None;
+            }
+            let next_name_hash = base32hex::encode(nsec.next_hashed_owner_name());
+            trace!("Next name: {}", next_name_hash);
+            debug_assert!(hashed_qname.len() == next_name_hash.len());
+            if record_name_hash == next_name_hash {
+                warn!("Invalid NSEC3 record (name == next_name): {:?}", r);
+                return None;
+            }
+            if record_name_hash < next_name_hash {
+                if *hashed_qname > record_name_hash && *hashed_qname < next_name_hash {
+                    Some(r)
+                } else {
+                    None
+                }
+            } else {
+                if *hashed_qname < record_name_hash && *hashed_qname > next_name_hash {
+                    Some(r)
+                } else {
+                    None
+                }
+            }
+        }).map(|r| *r).next();
+        if let Some(Err(e)) = hashed_qname_cache {
+            debug_assert!(false);
+            return Err(e);
+        }
+        return Ok(ret);
     }
 }
 impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {
     fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns) {
         edns.set_dnssec_ok(true);
         msg.set_checking_disabled(true);
+        msg.set_recursion_desired(false);
     }
     fn is_valid(&mut self, msg: &Message) -> bool {
         self.verify_rrsigs(msg).unwrap_or(ValidationResult::Bogus) != ValidationResult::Bogus
@@ -343,6 +593,7 @@ impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {
 #[cfg(test)]
 mod tests {
     extern crate env_logger;
+    use std::net::IpAddr;
     use std::time::Duration;
     use trust_dns::op::*;
     use trust_dns::rr::*;
@@ -355,12 +606,15 @@ mod tests {
     use ::utils::MessageExt;
     use ::mioco_config_start;
 
-    fn test_query(domain: &str) -> Message {
+    fn test_query_with_server(domain: &str, qtype: RecordType, server: IpAddr) -> Message {
         let mut q = Query::new();
         q.set_name(Name::parse(domain, Some(&Name::root())).unwrap())
         .set_query_class(DNSClass::IN)
-        .set_query_type(RecordType::A);
-        query_with_validator(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5), &mut DummyValidatorWithDnssec).unwrap()
+        .set_query_type(qtype);
+        query_with_validator(q, server, Duration::from_secs(5), &mut DummyValidatorWithDnssec).unwrap()
+    }
+    fn test_query(domain: &str, qtype: RecordType) -> Message {
+        test_query_with_server(domain, qtype, "8.8.8.8".parse().unwrap())
     }
 
     fn new_resolver() -> RcResolver {
@@ -368,54 +622,151 @@ mod tests {
         config.query.enable_dnssec = true;
         RcResolver::new(config)
     }
-
-    #[test]
-    fn test_dnssec_valid() {
+    fn test_valid_query_nodata(domain: &'static str) {
+        test_valid_query_core(domain, RecordType::NULL, |msg| {
+            assert!(msg.answers().iter().chain(msg.name_servers()).any(|r| r.rr_type() != RecordType::RRSIG));
+            assert!(msg.answers().len() == 0);
+        });
+    }
+    fn test_valid_query_insecure(domain: &'static str) {
+        test_valid_query_core(domain, RecordType::A, |msg| assert!(msg.answers().iter().chain(msg.name_servers()).all(|r| r.rr_type() != RecordType::RRSIG)));
+    }
+    fn test_valid_query(domain: &'static str) {
+        test_valid_query_core(domain, RecordType::A, |msg| assert!(msg.answers().iter().chain(msg.name_servers()).any(|r| r.rr_type() == RecordType::RRSIG)));
+    }
+    fn test_valid_query_nsec3(domain: &'static str) {
+        test_valid_query_core(domain, RecordType::A, |msg| {
+            assert!(msg.answers().iter().chain(msg.name_servers()).any(|r| r.rr_type() == RecordType::RRSIG));
+            assert!(msg.name_servers().iter().any(|r| r.rr_type() == RecordType::NSEC3));
+        });
+    }
+    fn test_valid_query_nsec(domain: &'static str) {
+        test_valid_query_core(domain, RecordType::A, |msg| {
+            assert!(msg.answers().iter().chain(msg.name_servers()).any(|r| r.rr_type() == RecordType::RRSIG));
+            assert!(msg.name_servers().iter().any(|r| r.rr_type() == RecordType::NSEC));
+        });
+    }
+    fn test_valid_query_core<T: FnOnce(&Message) + Send + 'static>(domain: &'static str, qtype: RecordType, extra_check: T) {
         env_logger::init().is_ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let mut validator = DnssecValidator::new(resolver.clone());
-            let msg = test_query("sigok.verteiltesysteme.net");
+            let msg = test_query(domain, qtype);
+            extra_check(&msg);
+            assert!(validator.is_valid(&msg));
+            let mut query = Query::new();
+            query.set_name(Name::parse(domain, Some(&Name::root())).unwrap());
+            query.set_query_type(qtype);
+            resolver.resolve_recursive(query).unwrap();
+        }).unwrap();
+    }
+    #[test]
+    fn test_dnssec_valid() {
+        test_valid_query("sigok.verteiltesysteme.net");
+        env_logger::init().is_ok();
+        mioco_config_start(move || {
+            let resolver = new_resolver();
+            let mut validator = DnssecValidator::new(resolver.clone());
+            let msg = test_query("sigok.verteiltesysteme.net", RecordType::A);
+            assert!(msg.answers().iter().any(|r| r.rr_type() == RecordType::RRSIG));
+            assert!(validator.is_valid(&msg));
+        }).unwrap();
+    }
+    #[test]
+    fn test_dnssec_valid_wildcard() {
+        test_valid_query("a.b.c.d.wildcardtest.sapikachu.com");
+        test_valid_query("a.a.a.wildcardtest2.sapikachu.com");
+        test_valid_query("a.a.a.a.wildcardtest2.sapikachu.com");
+        test_valid_query("c.c.c.c.wildcardtest2.sapikachu.com");
+        test_valid_query("c.c.c.wildcardtest2.sapikachu.com");
+        test_valid_query("test.c.c.wildcardtest2.sapikachu.com");
+        test_valid_query("test.c.c.c.wildcardtest2.sapikachu.com");
+        test_valid_query("b.wildcardtest2.sapikachu.com");
+    }
+    #[test]
+    fn test_dnssec_valid_wildcard_nsec() {
+        test_valid_query_nsec("a.b.c.d.wildcardtestinvalid.sapikachu.com");
+    }
+    #[test]
+    fn test_dnssec_valid_wildcard_nsec3() {
+        test_valid_query_nsec3("x.wilda.0skar.cz");
+        test_valid_query_nsec3("a.b.c.x.wilda.0skar.cz");
+    }
+    #[test]
+    fn test_dnssec_valid_cname() {
+        env_logger::init().is_ok();
+        mioco_config_start(move || {
+            let resolver = new_resolver();
+            let mut validator = DnssecValidator::new(resolver.clone());
+            let msg = test_query("dns1.registrar-servers.com", RecordType::A);
+            let ns = msg.answers().iter().filter_map(|r| match *r.rdata() {
+                RData::A(ref addr) => Some(addr.clone()),
+                _ => None,
+            }).next().unwrap();
+            let msg = test_query_with_server("sentry.sapikachu.net", RecordType::A, ns.into());
             assert!(msg.answers().iter().any(|r| r.rr_type() == RecordType::RRSIG));
             assert!(validator.is_valid(&msg));
         }).unwrap();
     }
     #[test]
     fn test_dnssec_valid_rollernet() {
-        env_logger::init().is_ok();
-        mioco_config_start(move || {
-            let resolver = new_resolver();
-            let mut validator = DnssecValidator::new(resolver.clone());
-            let msg = test_query("ns1.rollernet.us");
-            assert!(validator.is_valid(&msg));
-        }).unwrap();
+        test_valid_query_insecure("ns1.rollernet.us");
     }
     #[test]
     fn test_dnssec_valid_rollernet3() {
-        env_logger::init().is_ok();
-        mioco_config_start(move || {
-            let resolver = new_resolver();
-            let mut validator = DnssecValidator::new(resolver.clone());
-            let msg = test_query("nS3-i.rOllErnet.Us");
-            assert!(validator.is_valid(&msg));
-        }).unwrap();
+        test_valid_query_insecure("nS3-i.rOllErnet.Us");
+    }
+    #[test]
+    fn test_dnssec_insecure_delegation_nsec3_opt_out() {
+        test_valid_query_insecure("www.microsoft.com");
+        test_valid_query_insecure("www.google.com");
+    }
+    #[test]
+    fn test_dnssec_insecure_delegation_nsec3_no_opt_out() {
+        test_valid_query_insecure("www.google.cz");
+    }
+    #[test]
+    fn test_dnssec_insecure_delegation_nsec() {
+        test_valid_query_insecure("www.google.us");
+    }
+    #[test]
+    fn test_dnssec_nsec3() {
+        test_valid_query_nsec3("nonexistenttestxxxxxx.gov");
+        test_valid_query_nsec3("nonexistentxxxxxx.vpsie.com");
+        test_valid_query_nsec3("a.b.c.d.nonexistentxxxxxx.vpsie.com");
+    }
+    #[test]
+    fn test_dnssec_valid_nsec() {
+        test_valid_query_nsec("nsec.sapikachu.com");
+    }
+    #[test]
+    fn test_dnssec_valid_nodata() {
+        test_valid_query_nodata("sapikachu.com");
+        test_valid_query_nodata("my.vpsie.com");
+    }
+    #[test]
+    fn test_dnssec_valid_nodata_wildcard_nsec3() {
+        test_valid_query_nodata("x.wilda.0skar.cz");
+        test_valid_query_nodata("a.b.c.x.wilda.0skar.cz");
+    }
+    #[test]
+    fn test_dnssec_valid_nodata_wildcard() {
+        test_valid_query_nodata("a.b.c.d.wildcardtest.sapikachu.com");
+    }
+    #[test]
+    fn test_dnssec_valid_cloudflare_nsec() {
+        test_valid_query_nsec("nsec.cloudflare.com");
     }
     #[test]
     fn test_dnssec_valid_cloudflare() {
-        env_logger::init().is_ok();
-        mioco_config_start(move || {
-            let resolver = new_resolver();
-            let mut validator = DnssecValidator::new(resolver.clone());
-            let msg = test_query("blog.cloudflare.com");
-            assert!(validator.is_valid(&msg));
-        }).unwrap();
+        test_valid_query("blog.cloudflare.com");
     }
     #[test]
     fn test_dnssec_invalid() {
         env_logger::init().is_ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
-            let msg = test_query("sigfail.verteiltesysteme.net");
+            let msg = test_query("sigfail.verteiltesysteme.net", RecordType::A);
             assert!(msg.answers().iter().any(|r| r.rr_type() == RecordType::RRSIG));
             let mut validator = DnssecValidator::new(resolver.clone());
             assert!(!validator.is_valid(&msg));
@@ -435,12 +786,16 @@ mod tests {
             RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
             q.set_name(Name::parse("ns1.rollernet.us.", None).unwrap());
             RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
+            q.set_name(Name::parse("sentry.sapikachu.net.", None).unwrap());
+            RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
+            q.set_name(Name::parse("blog.cloudflare.com.", None).unwrap());
+            RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
+            q.set_name(Name::parse("nsectest.cloudflare.com.", None).unwrap());
+            RecursiveResolver::resolve(&q, resolver.clone()).unwrap();
             q.set_name(Name::parse("sigfail.verteiltesysteme.net.", None).unwrap());
             RecursiveResolver::resolve(&q, resolver.clone()).unwrap_err();
         }).unwrap();
     }
-    #[test]
-    #[ignore]
     fn test_dnssec_rollernet() {
         // This test will fail after signature in the data is expired, leaving here for
         // reference only

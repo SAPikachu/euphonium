@@ -14,6 +14,10 @@ use config::Config;
 const MAX_NS_TTL: u64 = 60 * 60 * 24;
 const MIN_NS_TTL: u64 = 60 * 15;
 
+// For testing
+// const MAX_NS_TTL: u64 = 9;
+// const MIN_NS_TTL: u64 = 3;
+
 pub struct NsItem {
     pub ip: IpAddr,
     pub name: Name, // FIXME: Is this really useful?
