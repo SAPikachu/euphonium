@@ -420,7 +420,6 @@ mod tests {
     use trust_dns::rr::*;
     use trust_dns::op::*;
     use super::*;
-    use utils::*;
     use config::*;
     use mioco;
     use ::mioco_config_start;

@@ -78,7 +78,7 @@ pub trait MessageExt {
     fn clone_resp(&self) -> Message;
     fn clone_resp_for(&self, q: &Query) -> Message;
     fn copy_resp_from(&mut self, other: &Message);
-    fn copy_resp_with<F>(&mut self, other: &Message, mut f: F)
+    fn copy_resp_with<F>(&mut self, other: &Message, f: F)
         where F: FnMut(&Record) -> Record;
     fn without_rr(&self) -> Message;
     fn is_resp_for(&self, other: &Message) -> bool;

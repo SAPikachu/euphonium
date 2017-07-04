@@ -120,7 +120,6 @@ impl NsCachePlain {
 pub struct NsCache {
     inst: Mutex<NsCachePlain>,
 }
-pub type RcNsCache = Arc<NsCache>;
 impl NsCache {
     pub fn new(config: Arc<Config>) -> Self {
         NsCache {
