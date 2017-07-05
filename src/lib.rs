@@ -25,6 +25,8 @@ extern crate time;
 extern crate yaml_rust;
 #[macro_use] extern crate lazy_static;
 extern crate data_encoding;
+extern crate nix;
+extern crate privdrop;
 
 #[cfg(test)]
 extern crate rustc_serialize;
@@ -110,6 +112,24 @@ pub fn main() {
     if args.flag_test {
         return;
     }
+    let pd = {
+        let mut pd = privdrop::PrivDrop::default();
+        if let Some(user) = config.serve.setuid.as_ref() {
+            pd = pd.user(user);
+            if let Some(group) = config.serve.setgid.as_ref() {
+                pd = pd.group(group);
+            }
+            Some(pd)
+        } else if config.serve.setgid.is_some() {
+            error!("Config: Can't set serve.setgid when serve.setuid is empty");
+            std::process::exit(1);
+        } else {
+            None
+        }
+    };
+    if args.flag_test {
+        return;
+    }
     mioco_config_start_ex(config.internal.threads, config.internal.mio_notify_capacity,
     move || {
         let ip = config.serve.ip;
@@ -120,5 +140,12 @@ pub fn main() {
         let resolver = RcResolver::new(config);
         serve_tcp(&addr, resolver.clone()).expect("Failed to initialize TCP listener");
         serve_udp(&addr, resolver).expect("Failed to initialize UDP listener");
+        if nix::unistd::geteuid() == 0 {
+            if let Some(pdobj) = pd {
+                pdobj.apply().expect("Failed to drop privileges");
+            } else {
+                warn!("Running under root")
+            }
+        }
     }).expect("Unexpected error from mioco::start");
 }

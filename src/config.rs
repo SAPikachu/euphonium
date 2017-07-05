@@ -91,6 +91,8 @@ pub struct ServeConfig {
     pub ip: IpAddr,
     pub port: u16,
     pub tcp_timeout: ProxiedValue<u32, Duration>,
+    pub setuid: Option<String>,
+    pub setgid: Option<String>,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]

@@ -4,6 +4,8 @@ serve:
     ip: "127.0.0.1"
     port: 5354
     tcp_timeout: 5 # Seconds
+    setuid: nobody
+    setgid: nogroup
 
 cache:
     min_cache_ttl: 15
