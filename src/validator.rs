@@ -1,19 +1,17 @@
-#![cfg_attr(debug_assertions, allow(unused_imports, dead_code))]
-
 use std::sync::Arc;
 use std::collections::HashSet;
 use std::time::{UNIX_EPOCH, Duration};
 
-use trust_dns::op::{Message, MessageType, ResponseCode, Query, OpCode, Edns};
+use trust_dns::op::{Message, Query, Edns};
 use trust_dns::rr::{DNSClass, RecordType, Record, RData, Name};
 use trust_dns::rr::rdata::{SIG, DNSKEY, NSEC3};
-use trust_dns::rr::dnssec::{Signer, TrustAnchor, Verifier, Nsec3HashAlgorithm};
+use trust_dns::rr::dnssec::{TrustAnchor, Verifier};
 use trust_dns::serialize::binary::{BinEncoder, BinSerializable};
 use itertools::Itertools;
 use data_encoding::base32hex;
 
 use resolver::RcResolver;
-use utils::{Result, Error};
+use utils::{Result};
 use recursive::RecursiveResolver;
 
 lazy_static! {
@@ -37,7 +35,9 @@ impl ResponseValidator for DummyValidator {
     }
     fn prepare_msg(&mut self, _: &mut Message, _: &mut Edns) { }
 }
+#[cfg(test)]
 struct DummyValidatorWithDnssec;
+#[cfg(test)]
 impl ResponseValidator for DummyValidatorWithDnssec {
     fn is_valid(&mut self, _: &Message) -> bool {
         true
@@ -799,6 +799,7 @@ mod tests {
             RecursiveResolver::resolve(&q, resolver.clone()).unwrap_err();
         }).unwrap();
     }
+    #[allow(dead_code)]
     fn test_dnssec_rollernet() {
         // This test will fail after signature in the data is expired, leaving here for
         // reference only
