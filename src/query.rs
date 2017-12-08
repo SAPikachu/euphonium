@@ -11,6 +11,7 @@ use utils::{Result, Error, MessageExt, WithTimeout, Future, AsDisplay};
 use utils::with_timeout::TcpStreamExt;
 use transport::{DnsTransport, DnsMsgTransport};
 use validator::{ResponseValidator, DummyValidator};
+use resolver::ErrorKind as ResolverErrorKind;
 
 pub const EDNS_VER: u8 = 0;
 pub const EDNS_MAX_PAYLOAD: u16 = 1200;
@@ -73,7 +74,19 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
                   transport, msg.id(), msg.as_disp(), resp);
             continue;
         }
-        if !validator.is_valid(&resp) {
+        let is_valid = match validator.is_valid(&resp) {
+            Ok(x) => x,
+            Err(e) => {
+                match e {
+                    val @ Error::Resolver(ResolverErrorKind::LostRace) |
+                    val @ Error::Resolver(ResolverErrorKind::AlreadyQueried) => {
+                        return Err(val)
+                    },
+                    _ => false,
+                }
+            },
+        };
+        if !is_valid {
             if resp.truncated() {
                 return Err(ErrorKind::TruncatedBogus(msg).into());
             }

@@ -105,7 +105,7 @@ impl RcResolverWeak {
 impl RcResolver {
     fn init_root_servers(&self) {
         let mut guard = self.ns_cache.lock().unwrap();
-        let mut entry = guard.lookup_or_insert(&Name::root());
+        let entry = guard.lookup_or_insert(&Name::root());
         entry.pin();
         for ip in &self.config.root_servers {
             entry.add_ns(*ip, Name::root(), None);
@@ -157,7 +157,10 @@ impl RcResolver {
                     let updated = match RecursiveResolver::resolve(&q, res.clone().into()) {
                         Ok(msg) => [ResponseCode::NoError, ResponseCode::NXDomain]
                                    .contains(&msg.response_code()),
-                        Err(_) => false,
+                        Err(e) => {
+                            info!("Failed to refresh cache for {}: {:?}", q.as_disp(), e);
+                            false
+                        },
                     };
                     if !updated {
                         res.cache.operate(|cache| {

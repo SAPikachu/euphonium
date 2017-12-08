@@ -25,13 +25,13 @@ enum ValidationResult {
     Bogus,
 }
 pub trait ResponseValidator {
-    fn is_valid(&mut self, msg: &Message) -> bool;
+    fn is_valid(&mut self, msg: &Message) -> Result<bool>;
     fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns);
 }
 pub struct DummyValidator;
 impl ResponseValidator for DummyValidator {
-    fn is_valid(&mut self, _: &Message) -> bool {
-        true
+    fn is_valid(&mut self, _: &Message) -> Result<bool> {
+        Ok(true)
     }
     fn prepare_msg(&mut self, _: &mut Message, _: &mut Edns) { }
 }
@@ -39,8 +39,8 @@ impl ResponseValidator for DummyValidator {
 struct DummyValidatorWithDnssec;
 #[cfg(test)]
 impl ResponseValidator for DummyValidatorWithDnssec {
-    fn is_valid(&mut self, _: &Message) -> bool {
-        true
+    fn is_valid(&mut self, _: &Message) -> Result<bool> {
+        Ok(true)
     }
     fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns) {
         edns.set_dnssec_ok(true);

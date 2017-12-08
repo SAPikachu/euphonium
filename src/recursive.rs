@@ -9,7 +9,7 @@ use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
 use itertools::Itertools;
 
-use utils::{Result, Future, AsDisplay, MessageExt};
+use utils::{Result, Error, Future, AsDisplay, MessageExt};
 use query::{query_multiple_handle_futures, query_with_validator};
 use cache::{Cache, RecordSource};
 use nscache::NsCache;
@@ -198,7 +198,7 @@ impl RecursiveResolver {
         try!(self.maybe_stop());
         let result = try!(self.query_ns_impl(ns));
         try!(self.maybe_stop());
-        {
+        (|| {
             if result.response_code() == ResponseCode::NXDomain &&
                 result.answers().len() == 1 &&
                 result.answers()[0].rr_type() == RecordType::CNAME
@@ -217,7 +217,7 @@ impl RecursiveResolver {
                 return Ok(result)
             }
             self.handle_ns_referral(result)
-        }.map(|msg| { self.update_cache(&msg); msg })
+        })().map(|msg| { self.update_cache(&msg); msg })
     }
     #[allow(similar_names)]
     fn find_unresolved_cnames(&self, msg: &Message) -> Option<Vec<Record>> {
@@ -279,6 +279,12 @@ impl RecursiveResolver {
             let mut next_query = self.state.query.clone();
             next_query.set_name(next_name);
             match self.resolve_next(&next_query) {
+                Err(Error::Resolver(ErrorKind::AlreadyQueried)) => {
+                    return Err(Error::Resolver(ErrorKind::AlreadyQueried));
+                },
+                Err(Error::Resolver(ErrorKind::LostRace)) => {
+                    return Err(Error::Resolver(ErrorKind::LostRace));
+                },
                 Err(e) => {
                     warn!("Failed to resolve CNAME {} for {}: {:?}",
                           next_query.name(), self.state.query.as_disp(), e);

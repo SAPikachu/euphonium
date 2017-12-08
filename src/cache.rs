@@ -73,9 +73,6 @@ impl IsGcEligible for RecordEntry {
             Some(exp) => exp,
             None => return false,
         };
-        if self.expiration_notified.load(Ordering::Relaxed) {
-            return false;
-        }
         let is_important_query = [RecordType::A, RecordType::AAAA].contains(
             &self.message.queries()[0].query_type()
         );
@@ -290,20 +287,31 @@ impl CachePlain {
             return false;
         }
         let key: Key = (&msg.queries()[0]).into();
+        let msg_has_final_answer = msg.answers().iter().any(|x| x.rr_type() == msg.queries()[0].query_type());
+        let msg_has_cname = msg.answers().iter().any(|x| x.rr_type() == RecordType::CNAME);
         if let Some(existing) = self.records.get(&key) {
             if existing.source > source {
                 // Existing record is more preferable
                 return true;
             }
             if existing.source == source && !existing.is_expired() {
-                if !existing.message.name_servers().is_empty() || existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME) {
+                if !existing.message.name_servers().is_empty() {
                     // Existing record is more preferable
                     return true;
                 }
                 if msg.name_servers().is_empty() {
+                    let existing_has_cname = existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME);
+                    if existing_has_cname && msg_has_cname {
+                        // We stripped NS from responses containing CNAME
+                        return true;
+                    }
                     return false;
                 }
             }
+        }
+        if msg.queries()[0].query_type() != RecordType::CNAME && msg_has_cname && !msg_has_final_answer {
+            // Possibly query error
+            return false;
         }
         let all_records = msg.answers().iter()
         .chain(msg.name_servers())
@@ -334,6 +342,7 @@ impl CachePlain {
             ),
             shared: self.shared.clone(),
         });
+        // Continue query until getting an answer with NS
         !msg.name_servers().is_empty()
     }
 }

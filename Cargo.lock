@@ -1,36 +1,3 @@
-[root]
-name = "euphonium"
-version = "0.1.0"
-dependencies = [
- "byteorder 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "chrono 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "data-encoding 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "docopt 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "env_logger 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "itertools 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "log 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "macro-attr 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "mio 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "mioco 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "newtype_derive 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "nix 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "parking_lot 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "privdrop 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "quick-error 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rand 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)",
- "rustc-serialize 0.3.24 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde 1.0.9 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_derive 1.0.9 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_json 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_yaml 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "time 0.1.37 (registry+https://github.com/rust-lang/crates.io-index)",
- "timebomb 0.1.2 (git+https://github.com/SAPikachu/timebomb.git)",
- "treebitmap 0.2.2 (git+https://github.com/sopium/treebitmap.git)",
- "trust-dns 0.10.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "yaml-rust 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
 [[package]]
 name = "aho-corasick"
 version = "0.6.3"
@@ -213,6 +180,39 @@ version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "backtrace 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "euphonium"
+version = "0.1.0"
+dependencies = [
+ "byteorder 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "chrono 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "data-encoding 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "docopt 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "env_logger 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "itertools 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lazy_static 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "macro-attr 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "mio 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "mioco 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "newtype_derive 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nix 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "parking_lot 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "privdrop 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "quick-error 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rand 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rustc-serialize 0.3.24 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde 1.0.9 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_derive 1.0.9 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_json 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_yaml 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "time 0.1.37 (registry+https://github.com/rust-lang/crates.io-index)",
+ "timebomb 0.1.2 (git+https://github.com/SAPikachu/timebomb.git)",
+ "treebitmap 0.2.2 (git+https://github.com/sopium/treebitmap.git)",
+ "trust-dns 0.10.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "yaml-rust 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
