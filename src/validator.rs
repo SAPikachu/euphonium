@@ -588,8 +588,8 @@ impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {
         msg.set_checking_disabled(true);
         msg.set_recursion_desired(false);
     }
-    fn is_valid(&mut self, msg: &Message) -> bool {
-        self.verify_rrsigs(msg).unwrap_or(ValidationResult::Bogus) != ValidationResult::Bogus
+    fn is_valid(&mut self, msg: &Message) -> Result<bool> {
+        self.verify_rrsigs(msg).map(|x| x != ValidationResult::Bogus)
     }
 }
 
@@ -656,7 +656,7 @@ mod tests {
             let mut validator = DnssecValidator::new(resolver.clone());
             let msg = test_query(domain, qtype);
             extra_check(&msg);
-            assert!(validator.is_valid(&msg));
+            assert!(validator.is_valid(&msg).unwrap());
             let mut query = Query::new();
             query.set_name(Name::parse(domain, Some(&Name::root())).unwrap());
             query.set_query_type(qtype);
@@ -672,7 +672,7 @@ mod tests {
             let mut validator = DnssecValidator::new(resolver.clone());
             let msg = test_query("sigok.verteiltesysteme.net", RecordType::A);
             assert!(msg.answers().iter().any(|r| r.rr_type() == RecordType::RRSIG));
-            assert!(validator.is_valid(&msg));
+            assert!(validator.is_valid(&msg).unwrap());
         }).unwrap();
     }
     #[test]
@@ -708,7 +708,7 @@ mod tests {
             }).next().unwrap();
             let msg = test_query_with_server("sentry.sapikachu.net", RecordType::A, ns.into());
             assert!(msg.answers().iter().any(|r| r.rr_type() == RecordType::RRSIG));
-            assert!(validator.is_valid(&msg));
+            assert!(validator.is_valid(&msg).unwrap());
         }).unwrap();
     }
     #[test]
@@ -772,7 +772,7 @@ mod tests {
             let msg = test_query("sigfail.verteiltesysteme.net", RecordType::A);
             assert!(msg.answers().iter().any(|r| r.rr_type() == RecordType::RRSIG));
             let mut validator = DnssecValidator::new(resolver.clone());
-            assert!(!validator.is_valid(&msg));
+            assert!(!validator.is_valid(&msg).unwrap());
         }).unwrap();
     }
     #[test]
@@ -850,7 +850,7 @@ b461 677e cf31 8883 b8c0 6d00 0100 0100
             }
             debug!("{}", nsec_bytes.to_hex());
             let mut validator = DnssecValidator::new(resolver.clone());
-            assert!(validator.is_valid(&msg));
+            assert!(validator.is_valid(&msg).unwrap());
         }).unwrap();
     }
 }
