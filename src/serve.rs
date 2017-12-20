@@ -123,6 +123,11 @@ pub fn serve_udp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<(
     let sock : UdpSocket = try!(UdpSocket::bound(addr));
     let sock_clone = try!(sock.try_clone());
     Ok(serve_transport_async(
-        sock, sock_clone, resolver, |e| panic!("UDP listener is broken: {:?}", e)
+        sock, sock_clone, resolver, |e| {
+            match e {
+                Error::Decode(reason) => warn!("Invalid DNS request: {:?}", reason),
+                e2 => panic!("UDP listener is broken: {:?}", e2),
+            }
+        }
     ))
 }
