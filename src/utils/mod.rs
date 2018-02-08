@@ -6,9 +6,10 @@ use std::net::SocketAddr;
 
 use mioco::udp::UdpSocket;
 use trust_dns::op::{Message, Query, MessageType};
-use trust_dns::error::{DecodeError, EncodeError, DnsSecError};
+use trust_dns::error::{DnsSecError};
+use trust_dns_proto::error::{ProtoError};
 use trust_dns::rr::{RecordType, Record, Name};
-use trust_dns::serialize::binary::{BinDecoder, BinEncoder, BinSerializable};
+use trust_dns_proto::serialize::binary::{BinDecodable};
 use itertools::Itertools;
 
 use ::resolver::ErrorKind as ResolverErrorKind;
@@ -38,13 +39,10 @@ quick_error! {
             description(err.description())
             display("{}", err)
         }
-        Decode(err: DecodeError) {
+        Proto(err: ProtoError) {
             from()
             description(err.description())
-        }
-        Encode(err: EncodeError) {
-            from()
-            description(err.description())
+            display("{}", err)
         }
         ChannelRecv(err: std::sync::mpsc::RecvError) {
             from()
@@ -70,8 +68,6 @@ quick_error! {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait MessageExt {
-    fn to_bytes(&self) -> Result<Vec<u8>>;
-    fn from_bytes(buf: &[u8]) -> Result<Message>;
     fn from_udp(sock: &mut UdpSocket) -> Result<(Message, SocketAddr)>;
     fn strip_dnssec_records(&self) -> Message;
     fn new_resp(&self) -> Message;
@@ -84,19 +80,6 @@ pub trait MessageExt {
     fn is_resp_for(&self, other: &Message) -> bool;
 }
 impl MessageExt for Message {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        let mut ret = Vec::<u8>::new();
-        {
-            let mut encoder = BinEncoder::new(&mut ret);
-            try!(self.emit(&mut encoder));
-        }
-        Ok(ret)
-    }
-    fn from_bytes(buf: &[u8]) -> Result<Message> {
-        let mut decoder = BinDecoder::new(buf);
-        let msg = try!(Message::read(&mut decoder));
-        Ok(msg)
-    }
     fn from_udp(sock: &mut UdpSocket) -> Result<(Message, SocketAddr)> {
         let mut buf = [0u8; 1024 * 16];
         let (l, addr) = try!(sock.recv(&mut buf));
@@ -105,20 +88,19 @@ impl MessageExt for Message {
     }
     fn strip_dnssec_records(&self) -> Message {
         let mut filtered = self.without_rr();
-        const REMOVED_TYPES: [RecordType; 8] = [
-            RecordType::RRSIG,
-            RecordType::NSEC,
-            RecordType::NSEC3,
-            RecordType::DS,
-            RecordType::DNSKEY,
-            RecordType::KEY,
-            RecordType::NSEC3PARAM,
+        const REMOVED_TYPES: [RecordType; 1] = [
             RecordType::OPT,
         ];
         let query_type = self.queries()[0].query_type();
         let f = |r: &&Record| -> bool {
             let t = r.rr_type();
-            t == query_type || !REMOVED_TYPES.contains(&t)
+            if t == query_type {
+                return true;
+            }
+            if let RecordType::DNSSEC(_) = t {
+                return false;
+            }
+            !REMOVED_TYPES.contains(&t)
         };
         self.answers().iter().filter(&f)
         .foreach(|r| { filtered.add_answer(r.clone()); });

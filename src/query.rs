@@ -62,8 +62,8 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
                         _ => Error::Io(e),
                     }
                 },
-                Error::Decode(e) => {
-                    warn!("Failed to decode message: {:?}", e);
+                Error::Proto(e) => {
+                    warn!("[{}][{}] Failed to decode message for request {}: {:?}", transport, msg.id(), msg.as_disp(), e);
                     continue
                 },
                 _ => e,
@@ -172,13 +172,14 @@ pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>)
                 debug!("Timed out");
             },
             Err(Error::Query(ErrorKind::ValidationFailure(ref msg))) => {
-                trace!("ValidationFailure: {:?}", msg);
+                debug!("query_multiple_handle_futures: ValidationFailure: {:?}", msg);
             },
             Err(ref err) => {
-                debug!("Error {:?}", err);
+                debug!("query_multiple_handle_futures: Error {:?}", err);
             },
         };
         if should_return {
+            debug!("query_multiple_handle_futures: OK: {}", result.is_ok());
             return result;
         }
     }

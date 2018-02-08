@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::io;
 use std::fs::File;
 use std::io::{Read};
-use std::collections::btree_map::Entry as BtEntry;
+use linked_hash_map::Entry as BtEntry;
 use std::str::FromStr;
 
 use serde_yaml;

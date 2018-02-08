@@ -10,6 +10,7 @@ use mioco::sync::{Mutex};
 use mioco::sync::mpsc::{Sender};
 use trust_dns::rr::{Name, RecordType, Record, DNSClass};
 use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
+use trust_dns_proto::rr::dnssec::rdata::DNSSECRecordType;
 use parking_lot::Mutex as PlMutex;
 use itertools::Itertools;
 use time::Duration as ChDuration;
@@ -162,7 +163,7 @@ impl RecordEntry {
     pub fn is_authenticated(&self) -> bool {
         self.message.answers().iter()
         .chain(self.message.name_servers())
-        .any(|rec| rec.rr_type() == RecordType::RRSIG)
+        .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG))
     }
     pub fn get_source(&self) -> RecordSource {
         self.source
@@ -465,7 +466,7 @@ mod tests {
             config.cache.cache_limit = 5;
             config.cache.gc_aggressive_threshold = 10;
             let (send, _) = mioco::sync::mpsc::channel::<Query>();
-            Cache::new(send, Arc::new(config)).operate(|mut cache| {
+            Cache::new(send, Arc::new(config)).operate(|cache| {
                 add_entry!(cache, "www.nonexistent1.com", A, NXDomain);
                 add_entry!(cache, "www.nonexistent2.com", A, NXDomain);
                 add_entry!(cache, "www.nonexistent3.com", A, NXDomain);
@@ -486,7 +487,7 @@ mod tests {
             config.cache.min_cache_ttl = 1;
             config.cache.neg_cache_ttl = 1;
             let (send, _) = mioco::sync::mpsc::channel::<Query>();
-            Cache::new(send, Arc::new(config)).operate(|mut cache| {
+            Cache::new(send, Arc::new(config)).operate(|cache| {
                 add_entry!(cache, "www.nonexistent.com", A, NXDomain);
                 assert_eq!(cache.len(), 1);
                 cache.gc();
@@ -506,7 +507,7 @@ mod tests {
             config.cache.cache_limit = 100;
             config.cache.gc_aggressive_threshold = 10;
             let (send, _) = mioco::sync::mpsc::channel::<Query>();
-            Cache::new(send, Arc::new(config)).operate(|mut cache| {
+            Cache::new(send, Arc::new(config)).operate(|cache| {
                 let shared = cache.shared.clone();
 
                 // Normal mode

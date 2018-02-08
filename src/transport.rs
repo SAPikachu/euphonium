@@ -8,11 +8,12 @@ use std::net::SocketAddr;
 use mioco::udp::UdpSocket;
 use mioco::tcp::TcpStream;
 use trust_dns::op::{Message};
+use trust_dns_proto::serialize::binary::{BinDecodable, BinEncodable};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, NetworkEndian};
 
 use utils::with_timeout::WithTimeoutState;
-use utils::{MessageExt, Result};
+use utils::{Result};
 
 pub trait DnsTransport {
     /// Receives a DNS message via transport. If `addr` is specified and this is an UDP transport,

@@ -6,6 +6,7 @@ extern crate env_logger;
 extern crate mio;
 #[macro_use] extern crate mioco;
 extern crate trust_dns;
+extern crate trust_dns_proto;
 extern crate rand;
 #[macro_use] extern crate quick_error;
 #[macro_use] extern crate log;
@@ -27,6 +28,7 @@ extern crate yaml_rust;
 extern crate data_encoding;
 extern crate nix;
 extern crate privdrop;
+extern crate linked_hash_map;
 
 #[cfg(test)]
 extern crate rustc_serialize;
@@ -98,7 +100,7 @@ fn mioco_config_start<F, T>(f: F) -> std::thread::Result<T>
     }, 30000)
 }
 pub fn main() {
-    env_logger::init().expect("What the ...?");
+    env_logger::init();
     let args: Args = Docopt::new(USAGE).unwrap()
     .version(Some(VERSION_FULL.into()))
     .deserialize()

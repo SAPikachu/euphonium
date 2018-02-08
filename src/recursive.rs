@@ -1,12 +1,13 @@
 use std::sync::{Arc};
 use std::net::IpAddr;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{Ordering, AtomicBool};
+use std::sync::atomic::{Ordering, AtomicBool, AtomicUsize, ATOMIC_USIZE_INIT};
 
 use mioco::sync::Mutex;
 use mioco::sync::mpsc::{channel, Sender};
 use trust_dns::op::{Message, ResponseCode, Query};
 use trust_dns::rr::{DNSClass, Name, RecordType, RData, Record};
+use trust_dns_proto::rr::dnssec::rdata::DNSSECRecordType;
 use itertools::Itertools;
 
 use utils::{Result, Error, Future, AsDisplay, MessageExt};
@@ -16,6 +17,8 @@ use nscache::NsCache;
 use config::Config;
 use resolver::{ErrorKind, RcResolver};
 use validator::{DnssecValidator, SubqueryResolver, DummyValidator};
+
+static _DEBUG_ID: AtomicUsize = ATOMIC_USIZE_INIT;
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 struct QueryHash(Name, RecordType, DNSClass);
@@ -28,8 +31,6 @@ impl<'a> From<&'a Query> for QueryHash {
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 enum QueriedItem {
     NS(QueryHash, IpAddr),
-    CNAME(Name),
-    NSDomain(Name, Name),
     Query(QueryHash),
 }
 enum SubqueryState {
@@ -45,6 +46,7 @@ struct RecursiveResolverState {
     parent: RcResolver,
     is_done: Arc<AtomicBool>,
     subqueries: Arc<Mutex<HashMap<QueryHash, SubqueryState>>>,
+    upstream_queries: HashSet<QueryHash>,
 }
 impl RecursiveResolverState {
     fn new(q: &Query, parent: RcResolver) -> Self {
@@ -56,15 +58,19 @@ impl RecursiveResolverState {
             parent: parent,
             is_done: Arc::default(),
             subqueries: Arc::new(Mutex::new(Default::default())),
+            upstream_queries: HashSet::default(),
         }
     }
     fn new_inner(&self, q: &Query) -> Result<Self> {
+        let mut upstream_queries = self.upstream_queries.clone();
+        upstream_queries.insert((&self.query).into());
         Ok(RecursiveResolverState {
             queried_items: self.queried_items.clone(),
             query: q.clone(),
             parent: self.parent.clone(),
             is_done: self.is_done.clone(),
             subqueries: self.subqueries.clone(),
+            upstream_queries: upstream_queries,
         })
     }
 }
@@ -85,7 +91,7 @@ impl RecursiveResolver {
     }
     fn query(&self) -> Result<Message> {
         let name = self.state.query.name();
-        let is_ds = self.state.query.query_type() == RecordType::DS && !name.is_root();
+        let is_ds = self.state.query.query_type() == RecordType::DNSSEC(DNSSECRecordType::DS) && !name.is_root();
         let nscache = self.get_ns_cache();
         let ns = if is_ds {
             // Start from the first ancestor zone that is known to serve DS response, which
@@ -107,18 +113,17 @@ impl RecursiveResolver {
         .set_query_type(RecordType::A)
         .set_query_class(DNSClass::IN);
         // TODO: IPv6
+        self.maybe_stop()?;
         let result = try!(self.resolve_next(&query));
         let ips = result.answers().iter().filter_map(|x| match *x.rdata() {
             RData::A(ref address) => Some((IpAddr::V4(*address), x.ttl())),
             _ => None,
         }).collect_vec();
         self.get_ns_cache().update(auth_zone, ips.iter().map(|&(ip, ttl)| (ip, ns.clone(), ttl as u64)));
+        self.maybe_stop()?;
         self.query_ns_multiple(ips.iter().map(|&(ip, _)| ip), None)
     }
     fn query_ns_domain_future(&self, auth_zone: &Name, ns: Name) -> Option<Future<Result<Message>>> {
-        if !self.register_query(QueriedItem::NSDomain(auth_zone.clone(), ns.clone())) {
-            return None;
-        }
         let inst = self.clone();
         let auth_zone_clone = auth_zone.clone();
         Some(Future::from_fn(move || inst.query_ns_domain(&auth_zone_clone, &ns)))
@@ -272,9 +277,6 @@ impl RecursiveResolver {
                 RData::CNAME(ref cname) => cname.clone(),
                 _ => panic!("Record type doesn't match RData"),
             };
-            if !self.register_query(QueriedItem::CNAME(next_name.clone())) {
-                return Err(ErrorKind::LostRace.into());
-            }
             debug!("[{}] CNAME referral: {}", self.state.query.name(), next_name);
             let mut next_query = self.state.query.clone();
             next_query.set_name(next_name);
@@ -286,11 +288,13 @@ impl RecursiveResolver {
                     return Err(Error::Resolver(ErrorKind::LostRace));
                 },
                 Err(e) => {
+                    self.maybe_stop()?;
                     warn!("Failed to resolve CNAME {} for {}: {:?}",
                           next_query.name(), self.state.query.as_disp(), e);
                     return Ok(msg);
                 },
                 Ok(next_msg) => {
+                    self.maybe_stop()?;
                     let mut new_msg = msg.without_rr();
                     new_msg.set_response_code(next_msg.response_code());
                     unresolved_cnames.iter().cloned().foreach(|x| {
@@ -372,10 +376,8 @@ impl RecursiveResolver {
         let ret = try!(resolver.query());
         Ok(ret)
     }
-    fn resolve_next(&self, q: &Query) -> Result<Message> {
-        use std::collections::hash_map::Entry::{Occupied, Vacant};
-        use ::recursive::SubqueryState::{Pending, Completed, Error};
-        if let Some(Some(msg)) = self.get_cache().lookup(
+    fn resolve_from_cache(&self, q: &Query) -> Option<Message> {
+        match self.get_cache().lookup(
             q,
             |m| if m.get_source() >= RecordSource::Recursive {
                 Some(m.create_response())
@@ -383,6 +385,14 @@ impl RecursiveResolver {
                 None
             },
         ) {
+            Some(x) => x,
+            None => None,
+        }
+    }
+    fn resolve_next(&self, q: &Query) -> Result<Message> {
+        use std::collections::hash_map::Entry::{Occupied, Vacant};
+        use ::recursive::SubqueryState::{Pending, Completed, Error};
+        if let Some(msg) = self.resolve_from_cache(q) {
             return Ok(msg);
         }
         try!(self.maybe_stop());
@@ -393,12 +403,13 @@ impl RecursiveResolver {
             // Avoid query loop which causes resource leak
             return Err(ErrorKind::AlreadyQueried.into());
         }
+        let query_id = _DEBUG_ID.fetch_add(1, Ordering::Relaxed);
         let (send, recv) = {
             use std::mem;
             match self.state.subqueries.lock().unwrap().entry(q.into()) {
                 Vacant(e) => {
-                    debug!("Subquery (new): {} -> {}",
-                           self.state.query.as_disp(), q.as_disp());
+                    debug!("[{}] Subquery (new): {} -> {}",
+                           query_id, self.state.query.as_disp(), q.as_disp());
                     e.insert(Pending(None));
                     (None, None)
                 },
@@ -407,8 +418,13 @@ impl RecursiveResolver {
                         Completed(ref msg) => return Ok(msg.clone()),
                         Error => return Err(ErrorKind::AlreadyQueried.into()),
                         Pending(ref mut stored_sender) => {
-                            debug!("Subquery (existing): {} -> {}",
-                                   self.state.query.as_disp(), q.as_disp());
+                            if self.state.upstream_queries.contains(&q.into()) {
+                                debug!("[{}] Subquery (breaking cycle): {} -> {}",
+                                       query_id, self.state.query.as_disp(), q.as_disp());
+                                return Err(ErrorKind::AlreadyQueried.into());
+                            }
+                            debug!("[{}] Subquery (existing): {} -> {}",
+                                   query_id, self.state.query.as_disp(), q.as_disp());
                             let (send, recv) = channel::<Option<Message>>();
                             let mut send_opt = Some(send);
                             mem::swap(stored_sender, &mut send_opt);
@@ -429,6 +445,7 @@ impl RecursiveResolver {
                 if let Some(ref s) = send {
                     s.send(result.as_ref().map(|x| x.clone()).ok()).is_ok();
                 }
+                debug!("[{}] Subquery (existing, {}) returning (OK: {})", query_id, q.as_disp(), result.is_ok());
                 result
             },
             None => {
@@ -448,6 +465,7 @@ impl RecursiveResolver {
                         })
                     },
                 };
+                debug!("[{}] Subquery (new, {}) returning (OK: {})", query_id, q.as_disp(), ret.is_ok());
                 ret
             },
         }
@@ -463,6 +481,15 @@ impl RecursiveResolver {
 }
 impl<'a> SubqueryResolver for &'a RecursiveResolver {
     fn resolve_sub(&self, q: Query) -> Result<Message> {
-        self.resolve_next(&q)
+        match self.resolve_next(&q) {
+            val @ Err(Error::Resolver(ErrorKind::LostRace)) |
+            val @ Err(Error::Resolver(ErrorKind::AlreadyQueried)) => {
+                match self.resolve_from_cache(&q) {
+                    Some(x) => Ok(x),
+                    None => val,
+                }
+            },
+            x => x,
+        }
     }
 }

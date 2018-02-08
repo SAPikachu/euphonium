@@ -28,20 +28,23 @@ quick-error = "^1.2"
 rand = "*"
 serde = "^1.0"
 serde_json = "*"
-serde_yaml = "=0.7.0"
+serde_yaml = "=0.7.3"
 serde_derive = "*"
 time = "*"
 treebitmap = { git = "https://github.com/sopium/treebitmap.git" }
-trust-dns = "^0.10.4"
+# trust-dns = { version = "^0.13.0", features = ["dnssec-openssl"] }
+trust-dns = { git = "https://github.com/bluejekyll/trust-dns.git", rev = "8f8a6082188bce028c3cd682e1b62ac7b6203908", features = ["dnssec-openssl"] }
+# trust-dns-proto = { version = ">=0.3", features = ["dnssec-openssl"] }
+trust-dns-proto = { git = "https://github.com/bluejekyll/trust-dns.git", rev = "8f8a6082188bce028c3cd682e1b62ac7b6203908", features = ["dnssec-openssl"] }
 yaml-rust = "*"
 lazy_static = "*"
+linked-hash-map = "0.5"
 
 [dev-dependencies]
 rustc-serialize = "*"
 timebomb = { git = "https://github.com/SAPikachu/timebomb.git" } 
 
 [replace]
-"serde_yaml:0.7.0" = { git = "https://github.com/SAPikachu/serde-yaml.git" }
 
 [lib]
 name = "eulib"

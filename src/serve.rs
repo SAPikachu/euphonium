@@ -8,6 +8,8 @@ use mioco::tcp::{TcpListener};
 use mioco::sync::mpsc::{channel};
 use trust_dns::op::{Message, ResponseCode, Edns, OpCode};
 use trust_dns::rr::{DNSClass, RecordType};
+use trust_dns_proto::rr::dnssec::rdata::DNSSECRecordType;
+use trust_dns_proto::serialize::binary::BinEncodable;
 
 use utils::{Result, Error, MessageExt, WithTimeout};
 use transport::{DnsTransport};
@@ -29,17 +31,17 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
         if req_edns.version() > EDNS_VER {
             warn!("Got EDNS version {}", req_edns.version());
             ret.set_response_code(ResponseCode::BADVERS);
-            return ret.to_bytes();
+            return ret.to_bytes().map_err(|e| e.into());
         }
     }
     if msg.queries().len() != 1 || msg.op_code() != OpCode::Query {
         // For simplicity, only support one question
         ret.set_response_code(ResponseCode::Refused);
-        return ret.to_bytes();
+        return ret.to_bytes().map_err(|e| e.into());
     }
     if msg.queries()[0].query_class() != DNSClass::IN {
         ret.set_response_code(ResponseCode::NotImp);
-        return ret.to_bytes();
+        return ret.to_bytes().map_err(|e| e.into());
     }
     match resolver.resolve(&mut ret) {
         Ok(_) => { /* Message is filled with answers */ },
@@ -53,12 +55,12 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
     } else {
         let is_authenticated = ret.answers().iter()
         .chain(ret.name_servers())
-        .any(|rec| rec.rr_type() == RecordType::RRSIG);
+        .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG));
         ret.set_authentic_data(is_authenticated);
     }
     let bytes = try!(ret.to_bytes());
     if should_truncate && bytes.len() > (msg.max_payload() as usize) {
-        return ret.truncate().to_bytes();
+        return ret.truncate().to_bytes().map_err(|e| e.into());
     }
     Ok(bytes)
 }
@@ -125,7 +127,7 @@ pub fn serve_udp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<(
     Ok(serve_transport_async(
         sock, sock_clone, resolver, |e| {
             match e {
-                Error::Decode(reason) => warn!("Invalid DNS request: {:?}", reason),
+                Error::Proto(reason) => warn!("Invalid DNS request: {:?}", reason),
                 e2 => panic!("UDP listener is broken: {:?}", e2),
             }
         }

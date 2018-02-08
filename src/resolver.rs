@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn simple_recursive_query() {
-        env_logger::init().is_ok();
+        env_logger::init();
         mioco_config_start(|| {
             let config = Config::default();
             let resolver = RcResolver::new(config);

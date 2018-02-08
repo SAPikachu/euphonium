@@ -31,7 +31,7 @@ const VERSION_FULL: &'static str = concat!(
 );
 
 fn main() {
-    env_logger::init().expect("What the ...?");
+    env_logger::init();
     let args: Args = Docopt::new(USAGE).unwrap()
     .version(Some(VERSION_FULL.into()))
     .deserialize()
