@@ -28,6 +28,10 @@ impl ForwardingResolver {
     }
     pub fn resolve(&self, q: Query, parent: RcResolver) -> Result<Message> {
         let msg = try!(query(q.clone(), self.server, *parent.config.query.timeout));
+        if !msg.answers().iter().any(|x| x.rr_type() == q.query_type()) {
+            // Invalid response
+            return Err(ErrorKind::RejectedIp.into());
+        }
         if let Some(ref ipset) = self.accepted_ips {
             // FIXME: Do we need IPv6 here?
             if msg.answers().iter().any(|x| if let RData::A(address) = *x.rdata()
