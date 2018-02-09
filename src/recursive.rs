@@ -404,6 +404,7 @@ impl RecursiveResolver {
             return Err(ErrorKind::AlreadyQueried.into());
         }
         let query_id = _DEBUG_ID.fetch_add(1, Ordering::Relaxed);
+        let mut is_cyclic = false;
         let (send, recv) = {
             use std::mem;
             match self.state.subqueries.lock().unwrap().entry(q.into()) {
@@ -419,21 +420,35 @@ impl RecursiveResolver {
                         Error => return Err(ErrorKind::AlreadyQueried.into()),
                         Pending(ref mut stored_sender) => {
                             if self.state.upstream_queries.contains(&q.into()) {
-                                debug!("[{}] Subquery (breaking cycle): {} -> {}",
+                                is_cyclic = true;
+                                (None, None)
+                            } else {
+                                debug!("[{}] Subquery (existing): {} -> {}",
                                        query_id, self.state.query.as_disp(), q.as_disp());
-                                return Err(ErrorKind::AlreadyQueried.into());
+                                let (send, recv) = channel::<Option<Message>>();
+                                let mut send_opt = Some(send);
+                                mem::swap(stored_sender, &mut send_opt);
+                                (send_opt, Some(recv))
                             }
-                            debug!("[{}] Subquery (existing): {} -> {}",
-                                   query_id, self.state.query.as_disp(), q.as_disp());
-                            let (send, recv) = channel::<Option<Message>>();
-                            let mut send_opt = Some(send);
-                            mem::swap(stored_sender, &mut send_opt);
-                            (send_opt, Some(recv))
                         }
                     }
                 },
             }
         };
+        if is_cyclic {
+            use mioco::timer::Timer;
+            let mut t = Timer::default();
+            t.set_timeout(5000);
+            t.read();
+            if let Some(msg) = self.resolve_from_cache(q) {
+                debug!("[{}] Subquery (breaking cycle, from cache): {} -> {}",
+                query_id, self.state.query.as_disp(), q.as_disp());
+                return Ok(msg);
+            }
+            debug!("[{}] Subquery (breaking cycle): {} -> {}",
+                   query_id, self.state.query.as_disp(), q.as_disp());
+            return Err(ErrorKind::AlreadyQueried.into());
+        }
         match recv {
             Some(ref r) => {
                 let ret = r.recv();
