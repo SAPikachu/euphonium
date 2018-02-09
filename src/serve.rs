@@ -58,9 +58,19 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
         .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG));
         ret.set_authentic_data(is_authenticated);
     }
-    let bytes = try!(ret.to_bytes());
+    let mut bytes = try!(ret.to_bytes());
     if should_truncate && bytes.len() > (msg.max_payload() as usize) {
-        return ret.truncate().to_bytes().map_err(|e| e.into());
+        ret.set_truncated(true);
+        ret.take_name_servers();
+        ret.take_additionals();
+        bytes = ret.to_bytes()?;
+        while bytes.len() > (msg.max_payload() as usize) {
+            let mut answers = ret.take_answers();
+            let new_len = answers.len() / 2;
+            answers.truncate(new_len);
+            ret.insert_answers(answers);
+            bytes = ret.to_bytes()?;
+        }
     }
     Ok(bytes)
 }
