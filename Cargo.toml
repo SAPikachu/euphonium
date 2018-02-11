@@ -33,9 +33,9 @@ serde_derive = "*"
 time = "*"
 treebitmap = { git = "https://github.com/sopium/treebitmap.git" }
 # trust-dns = { version = "^0.13.0", features = ["dnssec-openssl"] }
-trust-dns = { git = "https://github.com/bluejekyll/trust-dns.git", rev = "8f8a6082188bce028c3cd682e1b62ac7b6203908", features = ["dnssec-openssl"] }
+trust-dns = { git = "https://github.com/bluejekyll/trust-dns.git", rev = "77218fa1b80aa113571a339c1171bd0ca9288b06", features = ["dnssec-openssl"] }
 # trust-dns-proto = { version = ">=0.3", features = ["dnssec-openssl"] }
-trust-dns-proto = { git = "https://github.com/bluejekyll/trust-dns.git", rev = "8f8a6082188bce028c3cd682e1b62ac7b6203908", features = ["dnssec-openssl"] }
+trust-dns-proto = { git = "https://github.com/bluejekyll/trust-dns.git", rev = "77218fa1b80aa113571a339c1171bd0ca9288b06", features = ["dnssec-openssl"] }
 yaml-rust = "*"
 lazy_static = "*"
 linked-hash-map = "0.5"
