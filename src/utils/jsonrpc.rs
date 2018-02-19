@@ -5,10 +5,10 @@ pub struct JsonRpcRequest {
     id: u32,
 }
 impl JsonRpcRequest {
-    pub fn new(method: String) -> Self {
+    pub fn new(method: String, params: Vec<String>) -> Self {
         JsonRpcRequest {
             id: 42,
-            params: Vec::new(),
+            params: params,
             method: method,
         }
     }

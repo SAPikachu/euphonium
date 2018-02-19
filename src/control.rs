@@ -4,13 +4,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::fs::{metadata, set_permissions, remove_file};
 use std::sync::mpsc::TryRecvError;
 use std::fmt::{Debug, Display};
+use std::sync::Arc;
 
 use mioco;
 use mioco::sync::mpsc::{channel, Sender, Receiver};
+use mioco::sync::Mutex;
 use mioco::unix::UnixListener;
 use serde_json;
 
-use resolver::{RcResolver};
+use resolver::{RcResolverWeak, RcResolver};
 use utils::{WithTimeout, JsonRpcRequest};
 
 pub trait FormattableError: std::error::Error + Display + Debug {}
@@ -26,6 +28,10 @@ quick_error! {
             from()
             display("{}", inner)
         }
+        Param(msg: String) {
+            description("Invalid parameter")
+            display("Invalid parameter: {}", msg)
+        }
         Custom(msg: String) {
             description("Custom error")
             display("{}", msg)
@@ -37,6 +43,7 @@ pub struct ControlServer {
     #[allow(dead_code)]
     live_keeper: Sender<()>,
     notifier: Option<Receiver<()>>,
+    resolver: Arc<Mutex<RcResolverWeak>>,
 }
 impl Default for ControlServer {
     fn default() -> Self {
@@ -49,21 +56,28 @@ impl ControlServer {
         ControlServer {
             live_keeper: send,
             notifier: Some(recv),
+            resolver: Arc::new(Mutex::new(RcResolverWeak::default())),
         }
     }
-    pub fn run(&mut self, resolver: &RcResolver) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         let notifier = self.notifier.take().expect("run() can only be called once");
-        ControlServer::serve(resolver, notifier)
+        ControlServer::serve(self.resolver.clone(), notifier)
     }
-    fn serve(resolver: &RcResolver, live_notifier: Receiver<()>) -> Result<()> {
-        let sock_path = &resolver.config.control.sock_path;
-        // Clean up old socket
-        remove_file(sock_path).is_ok();
-        let listener = try!(UnixListener::bind(sock_path));
-        let mut perm = try!(metadata(sock_path)).permissions();
-        perm.set_mode(**resolver.config.control.sock_permission);
-        try!(set_permissions(sock_path, perm));
-        let weak = resolver.to_weak();
+    pub fn set_resolver(&self, resolver: &RcResolver) {
+        *self.resolver.lock().unwrap() = resolver.to_weak();
+    }
+    fn serve(resolver: Arc<Mutex<RcResolverWeak>>, live_notifier: Receiver<()>) -> Result<()> {
+        let listener = {
+            let resolver = resolver.lock().unwrap().upgrade().expect("Resolver is not set");
+            let sock_path = &resolver.config.control.sock_path;
+            // Clean up old socket
+            remove_file(sock_path).is_ok();
+            let listener = try!(UnixListener::bind(sock_path));
+            let mut perm = try!(metadata(sock_path)).permissions();
+            perm.set_mode(**resolver.config.control.sock_permission);
+            try!(set_permissions(sock_path, perm));
+            listener
+        };
         mioco::spawn(move || {
             loop {
                 debug!("Selecting");
@@ -82,7 +96,7 @@ impl ControlServer {
                         };
                     },
                 );
-                let resolver = match weak.upgrade() {
+                let resolver = match resolver.lock().unwrap().upgrade() {
                     Some(x) => x,
                     None => {
                         debug!("Resolver is dropped, closing control channel");

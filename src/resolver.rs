@@ -1,6 +1,8 @@
 use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 use std::default::Default;
 use std::sync::mpsc::TryRecvError;
+use std::ops::Deref;
 
 use mioco;
 use mioco::timer::Timer;
@@ -36,45 +38,104 @@ pub struct Resolver {
     pub ns_cache: NsCache,
     pub config: Arc<Config>,
     forwarders: Vec<Arc<ForwardingResolver>>,
-    control_server: Mutex<ControlServer>,
+    version: usize,
+}
+struct ResolverGlobal {
+    current: Arc<Resolver>,
+    control_server: ControlServer,
+    current_version: Arc<AtomicUsize>,
+}
+pub struct RcResolverInner {
+    resolver: Arc<Resolver>,
+    global: Arc<Mutex<ResolverGlobal>>,
+    current_version: Arc<AtomicUsize>,
+}
+impl Deref for RcResolverInner {
+    type Target = Resolver;
+    fn deref(&self) -> &Resolver {
+        self.resolver.deref()
+    }
 }
 macro_attr! {
     #[derive(Clone, NewtypeFrom!, NewtypeDeref!)]
-    pub struct RcResolver(Arc<Resolver>);
+    pub struct RcResolver(Arc<RcResolverInner>);
 }
-macro_attr! {
-    #[derive(Clone, NewtypeFrom!)]
-    pub struct RcResolverWeak(Weak<Resolver>);
-}
+#[derive(Clone)]
+pub struct RcResolverWeak(Weak<RcResolverInner>, Weak<Mutex<ResolverGlobal>>);
 
 impl RcResolver {
     pub fn new(config: Config) -> Self {
         let forwarders = ForwardingResolver::create_all(&config);
         let (send, recv) = channel::<Query>();
         let config_rc = Arc::new(config);
-        let ret: RcResolver = Arc::new(Resolver {
+        let resolver = Arc::new(Resolver {
             cache: Cache::new(send, config_rc.clone()),
             ns_cache: NsCache::new(config_rc.clone()),
             config: config_rc.clone(),
             forwarders: forwarders,
-            control_server: Mutex::new(ControlServer::new()),
-        }).into();
-        if cfg!(not(test)) {
-            ret.control_server.lock().unwrap().run(&ret)
-            .expect("Failed to initialize control socket");
-        }
+            version: 0,
+        });
+        let current_version = Arc::new(ATOMIC_USIZE_INIT);
+        let ret = RcResolver(Arc::new(RcResolverInner {
+            resolver: resolver.clone(),
+            current_version: current_version.clone(),
+            global: Arc::new(Mutex::new(ResolverGlobal {
+                current: resolver.clone(),
+                control_server: ControlServer::new(),
+                current_version: current_version.clone(),
+            })),
+        }));
         ret.init_root_servers();
         ret.attach();
         ret.run_cache_cleaner(recv);
+        if cfg!(not(test)) {
+            ret.run_control_server();
+        }
         ret
     }
-    #[cfg(test)]
+    fn update_config(self, new_config: Config) -> Self {
+        info!("Updating config");
+        let forwarders = ForwardingResolver::create_all(&new_config);
+        let (send, recv) = channel::<Query>();
+        let config_rc = Arc::new(new_config);
+        let mut guard = self.global.lock().unwrap();
+        let resolver = Arc::new(Resolver {
+            cache: Cache::new(send, config_rc.clone()),
+            ns_cache: NsCache::new(config_rc.clone()),
+            config: config_rc.clone(),
+            forwarders: forwarders,
+            version: self.current_version.fetch_add(1, Ordering::SeqCst) + 1,
+        });
+        guard.current = resolver.clone();
+        let ret = RcResolver(Arc::new(RcResolverInner {
+            resolver: resolver,
+            current_version: self.current_version.clone(),
+            global: self.global.clone(),
+        }));
+        ret.init_root_servers();
+        ret.attach();
+        ret.run_cache_cleaner(recv);
+        guard.control_server.set_resolver(&ret);
+        ret
+    }
+    pub fn sync_config(self) -> Self {
+        if self.version == self.current_version.load(Ordering::Relaxed) {
+            return self;
+        }
+        info!("Migrating to latest version");
+        RcResolver(Arc::new(RcResolverInner {
+            resolver: self.global.lock().unwrap().current.clone(),
+            current_version: self.current_version.clone(),
+            global: self.global.clone(),
+        }))
+    }
     pub fn run_control_server(&self) {
-        self.control_server.lock().unwrap().run(self)
-        .expect("Failed to initialize control socket");
+        let mut guard = self.global.lock().unwrap();
+        guard.control_server.set_resolver(self);
+        guard.control_server.run().expect("Failed to initialize control socket");
     }
     pub fn to_weak(&self) -> RcResolverWeak {
-        RcResolverWeak(Arc::downgrade(self))
+        RcResolverWeak(Arc::downgrade(&self.0), Arc::downgrade(&self.global))
     }
     pub fn current_weak() -> RcResolverWeak {
         mioco::get_userdata::<RcResolverWeak>()
@@ -84,7 +145,6 @@ impl RcResolver {
         Self::current_weak().upgrade().expect("Called `current()` without initialization")
     }
     fn attach(&self) {
-        assert!(RcResolver::current_weak().upgrade().is_none());
         mioco::set_userdata(self.to_weak());
         mioco::set_children_userdata(Some(self.to_weak()));
     }
@@ -96,10 +156,25 @@ impl Default for RcResolver {
 }
 impl RcResolverWeak {
     pub fn upgrade(&self) -> Option<RcResolver> {
-        self.0.upgrade().map(|x| x.into())
+        match self.0.upgrade() {
+            Some(x) => Some(RcResolver(x).sync_config()),
+            None => self.1.upgrade().map(|x| {
+                let guard = x.lock().unwrap();
+                RcResolver(Arc::new(RcResolverInner {
+                    resolver: guard.current.clone(),
+                    current_version: guard.current_version.clone(),
+                    global: x.clone(),
+                }))
+            })
+        }
     }
     fn empty() -> Self {
-        RcResolverWeak(Weak::new())
+        RcResolverWeak(Weak::new(), Weak::new())
+    }
+}
+impl Default for RcResolverWeak {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 impl RcResolver {
@@ -111,7 +186,7 @@ impl RcResolver {
             entry.add_ns(*ip, Name::root(), None);
         }
     }
-    pub fn handle_control_command(&self, cmd: &str, _: &[String]) -> ControlResult {
+    pub fn handle_control_command(&self, cmd: &str, params: &[String]) -> ControlResult {
         match cmd {
             "ping" => Ok("Pong".into()),
             "expire-cache" => {
@@ -122,6 +197,15 @@ impl RcResolver {
                 self.cache.clear();
                 Ok("Cleared cache".into())
             },
+            "reload-config" => {
+                if params.len() != 1 {
+                    return Err(ControlError::Param("Invalid number of parameter".into()));
+                }
+                let config = Config::from_file(&params[0]).map_err(|e| ControlError::Custom(format!("Failed to load config file: {}", e)))?;
+                info!("Reloading config from {}", params[0]);
+                self.clone().update_config(config);
+                Ok("Reloaded config".into())
+            }
             _ => Err(ControlError::UnknownCommand),
         }
     }
@@ -177,7 +261,7 @@ impl RcResolver {
                     break;
                 }
             }
-            debug!("Resolver is dropped, cache update coroutine is exiting");
+            info!("Resolver is dropped, cache update coroutine is exiting");
         });
     }
     pub fn resolve_recursive(self, q: Query) -> Result<Message> {
@@ -221,7 +305,7 @@ mod tests {
 
     #[test]
     fn simple_recursive_query() {
-        env_logger::init();
+        env_logger::try_init().is_ok();
         mioco_config_start(|| {
             let config = Config::default();
             let resolver = RcResolver::new(config);
@@ -232,8 +316,45 @@ mod tests {
         }).unwrap();
     }
     #[test]
+    fn reload_config() {
+        env_logger::try_init().is_ok();
+        mioco_config_start(|| {
+            use mioco::yield_now;
+            let config = Config::default();
+            let mut q = Query::new();
+            q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            let (resolver_weak, resolver) = {
+                let resolver = RcResolver::new(config);
+                let new_resolver = resolver.clone().update_config(Config::default());
+                assert!(!Arc::ptr_eq(&resolver, &new_resolver));
+                assert!(Arc::ptr_eq(&resolver.clone().sync_config().resolver, &new_resolver.resolver));
+                let result = new_resolver.clone().resolve_recursive(q.clone()).unwrap();
+                assert!(result.answers().len() > 0);
+                let resolver_weak = resolver.to_weak();
+                let resolver = new_resolver.clone();
+                resolver.clone();
+                (resolver_weak, new_resolver)
+            };
+            yield_now();
+            assert!(resolver_weak.0.upgrade().is_none());
+            let result = resolver.clone().resolve_recursive(q.clone()).unwrap();
+            assert!(result.answers().len() > 0);
+            assert!(Arc::ptr_eq(&resolver, &resolver.clone().sync_config()));
+            let result = resolver.clone().resolve_recursive(q.clone()).unwrap();
+            assert!(result.answers().len() > 0);
+            let resolver = resolver.clone().update_config(Config::default());
+            assert!(resolver_weak.0.upgrade().is_none());
+            let result = resolver.clone().resolve_recursive(q.clone()).unwrap();
+            assert!(result.answers().len() > 0);
+            assert!(Arc::ptr_eq(&resolver, &resolver.clone().sync_config()));
+            let result = resolver.clone().resolve_recursive(q.clone()).unwrap();
+            assert!(result.answers().len() > 0);
+        }).unwrap();
+    }
+    #[test]
     #[allow(unused_variables)]
     fn current() {
+        env_logger::try_init().is_ok();
         mioco_config_start(|| {
             let config = Config::default();
             let resolver = RcResolver::new(config);
@@ -244,19 +365,6 @@ mod tests {
                     RcResolver::current();
                 }).join().unwrap();
             }).join().unwrap();
-        }).unwrap();
-    }
-    #[test]
-    #[should_panic]
-    #[allow(unused_variables)]
-    fn no_multiple_instances() {
-        // FIXME: We have to use mioco::start here, using `mioco_config_start` (which
-        // doesn't handle panics in coroutines) will crash the test process
-        mioco::start(|| {
-            let config = Config::default();
-            let resolver = RcResolver::new(config);
-            let config = Config::default();
-            let resolver2 = RcResolver::new(config);
         }).unwrap();
     }
 }

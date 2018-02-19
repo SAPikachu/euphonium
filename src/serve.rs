@@ -36,6 +36,7 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
     }
     if msg.queries().len() != 1 || msg.op_code() != OpCode::Query {
         // For simplicity, only support one question
+        warn!("Refuse to serve: {:?}", msg);
         ret.set_response_code(ResponseCode::Refused);
         return ret.to_bytes().map_err(|e| e.into());
     }
@@ -98,6 +99,7 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
         }
     });
     mioco::spawn(move || {
+        let mut resolver = resolver;
         loop {
             let (msg, addr) = match recv.recv_msg(None) {
                 Ok(x) => x,
@@ -107,6 +109,7 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
                 },
             };
             let sch_req = sch.clone();
+            resolver = resolver.sync_config();
             let res = resolver.clone();
             mioco::spawn(move || {
                 let resp = handle_request(&res, &msg, TSend::should_truncate()).expect("handle_request should not return error");
@@ -118,10 +121,12 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
 pub fn serve_tcp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<()>> {
     let listener = try!(TcpListener::bind(addr));
     Ok(mioco::spawn(move || {
+        let mut resolver = resolver;
         loop {
             let sock = listener.accept().expect("Failed to accept TCP socket");
             sock.set_nodelay(true).unwrap_or(());
             let sock_clone = sock.try_clone().expect("Failed to clone TCP socket");
+            resolver = resolver.sync_config();
             serve_transport_async(
                 sock.with_resetting_timeout(*resolver.config.serve.tcp_timeout),
                 sock_clone.with_resetting_timeout(*resolver.config.serve.tcp_timeout),

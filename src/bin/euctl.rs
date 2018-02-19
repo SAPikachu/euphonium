@@ -15,7 +15,7 @@ use eulib::utils::{JsonRpcRequest, JsonRpcResponse};
 use eulib::config::Config;
 
 const USAGE: &'static str = "
-Usage: euctl [-s SOCK] <command>
+Usage: euctl [-s SOCK] <command> [<params>...]
        euctl (--help|--version)
 
 Options:
@@ -25,6 +25,7 @@ Options:
 struct Args {
     flag_sock: String,
     arg_command: String,
+    arg_params: Vec<String>,
 }
 const VERSION_FULL: &'static str = concat!(
     "euctl ", env!("CARGO_PKG_VERSION"),
@@ -40,7 +41,7 @@ fn main() {
     if sock_path.is_empty() {
         sock_path.push_str(&Config::default().control.sock_path);
     }
-    let req = JsonRpcRequest::new(args.arg_command);
+    let req = JsonRpcRequest::new(args.arg_command, args.arg_params);
     mioco::start(move || {
         let stream = UnixSocket::stream().unwrap();
         let (mut socket, _) = stream.connect(&sock_path).unwrap();
