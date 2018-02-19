@@ -19,7 +19,7 @@ itertools = "*"
 log = "*"
 macro-attr = "*"
 mio = "^0.5.1"
-mioco = "*"
+mioco = { git = "https://github.com/dpc/mioco.pre-0.9.git", rev = "23484def102216b3cfc09af4e3a9b15d622dc77e" }
 newtype_derive = "0.1.*"
 nix = "0.8.1"
 parking_lot = "^0.4"

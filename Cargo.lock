@@ -219,7 +219,7 @@ dependencies = [
  "log 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "macro-attr 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "mioco 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "mioco 0.8.1 (git+https://github.com/dpc/mioco.pre-0.9.git?rev=23484def102216b3cfc09af4e3a9b15d622dc77e)",
  "newtype_derive 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "nix 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -408,7 +408,7 @@ dependencies = [
 [[package]]
 name = "mioco"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "git+https://github.com/dpc/mioco.pre-0.9.git?rev=23484def102216b3cfc09af4e3a9b15d622dc77e#23484def102216b3cfc09af4e3a9b15d622dc77e"
 dependencies = [
  "context 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.36 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1136,7 +1136,7 @@ dependencies = [
 "checksum memchr 2.0.1 (registry+https://github.com/rust-lang/crates.io-index)" = "796fba70e76612589ed2ce7f45282f5af869e0fdd7cc6199fa1aa1f1d591ba9d"
 "checksum mio 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)" = "a637d1ca14eacae06296a008fa7ad955347e34efcb5891cfd8ba05491a37907e"
 "checksum mio 0.6.13 (registry+https://github.com/rust-lang/crates.io-index)" = "7da01a5e23070d92d99b1ecd1cd0af36447c6fd44b0fe283c2db199fa136724f"
-"checksum mioco 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)" = "769ff330492de4f3b8f01f92c7b9057fb50645e5dca0d4380e7ffc5152f1b05e"
+"checksum mioco 0.8.1 (git+https://github.com/dpc/mioco.pre-0.9.git?rev=23484def102216b3cfc09af4e3a9b15d622dc77e)" = "<none>"
 "checksum miow 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "3e690c5df6b2f60acd45d56378981e827ff8295562fc8d34f573deb267a59cd1"
 "checksum miow 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "8c1f2f3b1cf331de6896aabf6e9d55dca90356cc9960cca7eaaf408a355ae919"
 "checksum net2 0.2.31 (registry+https://github.com/rust-lang/crates.io-index)" = "3a80f842784ef6c9a958b68b7516bc7e35883c614004dd94959a4dca1b716c09"
