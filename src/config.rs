@@ -129,6 +129,7 @@ pub struct Config {
     pub query: QueryConfig,
     pub control: ControlConfig,
     pub internal: InternalConfig,
+    include: Option<Vec<String>>,
 }
 
 const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml");
@@ -138,6 +139,20 @@ impl Default for Config {
     }
 }
 fn merge_yaml(base: Yaml, input: Yaml) -> Yaml {
+    if let Yaml::Array(array_input) = input {
+        if let Yaml::Array(array_base) = base {
+            let mut new_array: Vec<Yaml> = Default::default();
+            if array_input[0] == Yaml::String("-- APPEND --".into()) {
+                new_array.extend(array_base);
+                new_array.extend(array_input.into_iter().skip(1));
+            } else {
+                new_array.extend(array_input);
+            }
+            return Yaml::Array(new_array);
+        } else {
+            return Yaml::Array(array_input);
+        }
+    }
     let input = if let Yaml::Hash(hash) = input {
         hash
     } else {
@@ -165,28 +180,47 @@ fn merge_config_values(user_values: Yaml) -> Yaml {
         user_values,
     )
 }
+fn read_file(path: &str) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut buffer = String::new();
+    file.read_to_string(&mut buffer)?;
+    Ok(buffer)
+}
+fn parse_yaml(content: &str) -> io::Result<Yaml> {
+    let parsed_yaml_docs = try!(
+        YamlLoader::load_from_str(content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    );
+    if parsed_yaml_docs.len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Config file must contain exactly one YAML dictionary",
+        ));
+    }
+    Ok(parsed_yaml_docs[0].clone())
+}
 impl Config {
     pub fn from_file(path: &str) -> io::Result<Self> {
-        let mut file = try!(File::open(path));
-        let mut buffer = String::new();
-        try!(file.read_to_string(&mut buffer));
-        Self::from_str(&buffer)
+        Self::from_str(&read_file(path)?)
     }
 }
 impl FromStr for Config {
     type Err = io::Error;
     fn from_str(content: &str) -> std::result::Result<Self, Self::Err> {
-        let parsed_yaml_docs = try!(
-            YamlLoader::load_from_str(content)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-        );
-        if parsed_yaml_docs.len() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Config file must contain exactly one YAML dictionary",
-            ));
+        let parsed_yaml_doc = parse_yaml(content)?;
+        let mut merged = merge_config_values(parsed_yaml_doc);
+        let err = |msg| (io::Error::new(io::ErrorKind::InvalidData, msg));
+        if let Some(vec) = merged["include"].as_vec().map(|x| (*x).clone()) {
+            for elem in &vec {
+                if let Some(s) = elem.as_str() {
+                    let content = read_file(s).map_err(|e| err(format!("Failed to read included file {}: {}", s, e)))?;
+                    let doc = parse_yaml(&content).map_err(|e| err(format!("Failed to parse included file {}: {}", s, e)))?;
+                    merged = merge_yaml(merged, doc);
+                } else {
+                    return Err(err(format!("Invalid data in include list: {:?}", elem)));
+                }
+            }
         }
-        let merged = merge_config_values(parsed_yaml_docs.into_iter().next().unwrap());
         let mut out_str = String::new();
         {
             let mut emitter = YamlEmitter::new(&mut out_str);
@@ -201,6 +235,8 @@ impl FromStr for Config {
 mod tests {
     use super::*;
     use std::net::IpAddr;
+    use std::fs::{File, remove_file};
+    use std::io::Write;
 
     #[test]
     fn test_default_config() {
@@ -217,6 +253,26 @@ forwarders:
         - "1.2.3.4"
         "#;
         let config = Config::from_str(config_file).unwrap();
+        let default_config = Config::default();
+        assert_eq!(config.serve.ip, "1.1.1.1".parse::<IpAddr>().unwrap());
+        assert_eq!(config.serve.port, default_config.serve.port);
+        assert_eq!(config.forwarders.len(), 1);
+        assert_eq!(config.forwarders[0].servers[0], "1.2.3.4".parse::<IpAddr>().unwrap());
+    }
+    #[test]
+    fn test_included_config() {
+        const INCLUDE_PATH: &str = "/tmp/7f326c2f-9743-4c77-8c5f-136d8d6738d4";
+        let included_file = r#"---
+serve:
+    ip: "1.1.1.1"
+
+forwarders:
+    - servers:
+        - "1.2.3.4"
+        "#;
+        { File::create(INCLUDE_PATH).unwrap().write_all(included_file.as_bytes()).unwrap(); }
+        let config = Config::from_str(&format!("---\n\ninclude: [\"{}\"]", INCLUDE_PATH)).unwrap();
+        remove_file(INCLUDE_PATH).is_ok();
         let default_config = Config::default();
         assert_eq!(config.serve.ip, "1.1.1.1".parse::<IpAddr>().unwrap());
         assert_eq!(config.serve.port, default_config.serve.port);
