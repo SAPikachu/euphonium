@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 use std::default::Default;
 use std::sync::mpsc::TryRecvError;
 use std::ops::Deref;
+use std::collections::HashSet;
 
 use mioco;
 use mioco::timer::Timer;
@@ -38,6 +39,7 @@ pub struct Resolver {
     pub ns_cache: NsCache,
     pub config: Arc<Config>,
     forwarders: Vec<Arc<ForwardingResolver>>,
+    forward_zones: HashSet<Name>,
     version: usize,
 }
 struct ResolverGlobal {
@@ -66,6 +68,7 @@ pub struct RcResolverWeak(Weak<RcResolverInner>, Weak<Mutex<ResolverGlobal>>);
 impl RcResolver {
     pub fn new(config: Config) -> Self {
         let forwarders = ForwardingResolver::create_all(&config);
+        let forward_zones = config.forward_zones.iter().map(|x| (*x.zone).clone()).collect();
         let (send, recv) = channel::<Query>();
         let config_rc = Arc::new(config);
         let resolver = Arc::new(Resolver {
@@ -73,6 +76,7 @@ impl RcResolver {
             ns_cache: NsCache::new(config_rc.clone()),
             config: config_rc.clone(),
             forwarders: forwarders,
+            forward_zones: forward_zones,
             version: 0,
         });
         let current_version = Arc::new(ATOMIC_USIZE_INIT);
@@ -85,7 +89,7 @@ impl RcResolver {
                 current_version: current_version.clone(),
             })),
         }));
-        ret.init_root_servers();
+        ret.init_predefined_ns();
         ret.attach();
         ret.run_cache_cleaner(recv);
         if cfg!(not(test)) {
@@ -96,6 +100,7 @@ impl RcResolver {
     fn update_config(self, new_config: Config) -> Self {
         info!("Updating config");
         let forwarders = ForwardingResolver::create_all(&new_config);
+        let forward_zones = new_config.forward_zones.iter().map(|x| (*x.zone).clone()).collect();
         let (send, recv) = channel::<Query>();
         let config_rc = Arc::new(new_config);
         let mut guard = self.global.lock().unwrap();
@@ -104,6 +109,7 @@ impl RcResolver {
             ns_cache: NsCache::new(config_rc.clone()),
             config: config_rc.clone(),
             forwarders: forwarders,
+            forward_zones: forward_zones,
             version: self.current_version.fetch_add(1, Ordering::SeqCst) + 1,
         });
         guard.current = resolver.clone();
@@ -112,7 +118,7 @@ impl RcResolver {
             current_version: self.current_version.clone(),
             global: self.global.clone(),
         }));
-        ret.init_root_servers();
+        ret.init_predefined_ns();
         ret.attach();
         ret.run_cache_cleaner(recv);
         guard.control_server.set_resolver(&ret);
@@ -178,12 +184,19 @@ impl Default for RcResolverWeak {
     }
 }
 impl RcResolver {
-    fn init_root_servers(&self) {
+    fn init_predefined_ns(&self) {
         let mut guard = self.ns_cache.lock().unwrap();
-        let entry = guard.lookup_or_insert(&Name::root());
-        entry.pin();
-        for ip in &self.config.root_servers {
-            entry.add_ns(*ip, Name::root(), None);
+        {
+            let entry = guard.lookup_or_insert(&Name::root());
+            for ip in &self.config.root_servers {
+                entry.add_ns(*ip, Name::root(), None);
+            }
+            entry.pin();
+        }
+        for forward_zone in &self.config.forward_zones {
+            let entry = guard.lookup_or_insert(&*forward_zone.zone);
+            entry.add_ns(forward_zone.server, forward_zone.zone.clone(), None);
+            entry.pin();
         }
     }
     pub fn handle_control_command(&self, cmd: &str, params: &[String]) -> ControlResult {
@@ -267,7 +280,20 @@ impl RcResolver {
     pub fn resolve_recursive(self, q: Query) -> Result<Message> {
         RecursiveResolver::resolve(&q, self)
     }
+    fn is_forward_zone(&self, name: &Name) -> bool {
+        if name.is_root() {
+            return false;
+        }
+        if self.forward_zones.contains(name) {
+            return true;
+        }
+        self.is_forward_zone(&name.base_name())
+    }
     fn resolve_internal(&self, q: &Query) -> Result<Message> {
+        if self.is_forward_zone(q.name()) {
+            // Server is registered in nscache
+            return self.clone().resolve_recursive((*q).clone());
+        }
         let mut futures = self.forwarders.iter().cloned().map(move |forwarder| {
             let qc = (*q).clone();
             let res = self.clone();
@@ -303,6 +329,21 @@ mod tests {
     use ::mioco_config_start;
     use ::config::*;
 
+    #[test]
+    fn forward_zone() {
+        env_logger::try_init().is_ok();
+        mioco_config_start(|| {
+            let mut config = Config::default();
+            config.forward_zones.push(ForwardZoneConfig {
+                zone: Name::parse("com", Some(&Name::root())).unwrap().into(),
+                server: "127.0.0.254".parse().unwrap(),
+            });
+            let resolver = RcResolver::new(config);
+            let mut q = Query::new();
+            q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            resolver.resolve_internal(&q).unwrap_err();
+        }).unwrap();
+    }
     #[test]
     fn simple_recursive_query() {
         env_logger::try_init().is_ok();

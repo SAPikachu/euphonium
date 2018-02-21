@@ -59,7 +59,14 @@ impl NsCacheEntry {
     pub fn pin(&mut self) {
         self.ttl = None;
     }
+    pub fn is_pinned(&self) -> bool {
+        self.ttl.is_none()
+    }
     pub fn add_ns(&mut self, ip: IpAddr, domain: Name, ttl: Option<u64>) {
+        if self.is_pinned() {
+            warn!("Attempting to modify pinned entry {}", domain);
+            return;
+        }
         if self.is_expired() {
             self.nameservers.clear();
             self.timestamp = SystemTime::now();

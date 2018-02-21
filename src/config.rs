@@ -14,49 +14,76 @@ use serde_yaml;
 use serde::{Deserialize, Deserializer};
 use serde::de::Error as DesError;
 use yaml_rust::{Yaml, YamlLoader, YamlEmitter};
+use trust_dns::rr::Name;
 
 use utils::IpSet;
 
+pub trait Validator<T> {
+    fn validate(val: &T) -> Result<(), String>;
+}
+impl<T> Validator<T> for () {
+    fn validate(_: &T) -> Result<(), String> { Ok(()) }
+}
 #[derive(Debug)]
-pub struct ProxiedValue<TStorage, TValue>(TValue, PhantomData<TStorage>);
-impl<TStorage, TValue> Deref for ProxiedValue<TStorage, TValue> {
+pub struct NoRootName;
+impl Validator<Name> for NoRootName {
+    fn validate(val: &Name) -> Result<(), String> {
+        if val.is_root() {
+            return Err("Root domain is not allowed".into());
+        }
+        Ok(())
+    }
+}
+#[derive(Debug)]
+pub struct ProxiedValue<TStorage, TValue, TValidator: Validator<TValue> = ()>(TValue, PhantomData<TStorage>, PhantomData<TValidator>);
+impl<TStorage, TValue, TValidator: Validator<TValue>> Deref for ProxiedValue<TStorage, TValue, TValidator> {
     type Target = TValue;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
-impl<TStorage, TValue> From<TValue> for ProxiedValue<TStorage, TValue> {
+impl<TStorage, TValue, TValidator: Validator<TValue>> From<TValue> for ProxiedValue<TStorage, TValue, TValidator> {
     fn from(val: TValue) -> Self {
-        ProxiedValue(val, PhantomData)
+        ProxiedValue(val, PhantomData, PhantomData)
     }
 }
 pub trait FromStorage<'de, TStorage> {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: TStorage) -> Result<Self, TDes::Error> where Self: Sized;
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &TStorage) -> Result<Self, TDes::Error> where Self: Sized;
 }
-impl<'de, TStorage, TValue> Deserialize<'de> for ProxiedValue<TStorage, TValue>
-    where TStorage: Deserialize<'de>,
+impl<'de, TStorage, TValue, TValidator> Deserialize<'de> for ProxiedValue<TStorage, TValue, TValidator>
+    where TStorage: Deserialize<'de> + std::fmt::Display,
           TValue: FromStorage<'de, TStorage>,
+          TValidator: Validator<TValue>
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
         where D: Deserializer<'de>,
     {
         let val = try!(TStorage::deserialize(deserializer));
-        let result = try!(TValue::from_storage::<D>(val));
-        Ok(ProxiedValue(result, PhantomData))
+        let result = try!(TValue::from_storage::<D>(&val));
+        TValidator::validate(&result).map_err(|e| D::Error::custom(format!("Invalid value {}: {}", val, e)))?;
+        Ok(result.into())
     }
 }
 impl<'de> FromStorage<'de, u32> for Duration {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: u32) -> Result<Self, TDes::Error> {
-        Ok(Duration::from_secs(storage as u64))
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &u32) -> Result<Self, TDes::Error> {
+        Ok(Duration::from_secs(*storage as u64))
     }
 }
 impl<'de> FromStorage<'de, String> for Arc<IpSet> {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: String) -> Result<Self, TDes::Error> {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
         IpSet::from_file(&storage)
         .map(Arc::new)
         .map_err(|e| TDes::Error::custom(format!(
             "Failed to load IP list from {}: {}", storage, e,
+        )))
+    }
+}
+impl<'de> FromStorage<'de, String> for Name {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
+        Name::parse(&storage, Some(&Name::root()))
+        .map_err(|e| TDes::Error::custom(format!(
+            "Failed to parse domain name {}: {}", storage, e,
         )))
     }
 }
@@ -65,7 +92,7 @@ macro_attr! {
     pub struct PermissionBits(u32);
 }
 impl<'de> FromStorage<'de, String> for PermissionBits {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: String) -> Result<Self, TDes::Error> {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
         u32::from_str_radix(&storage, 8)
         .map(Into::into)
         .map_err(|_| TDes::Error::custom(&format!(
@@ -121,15 +148,25 @@ pub struct InternalConfig {
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+pub struct ForwardZoneConfig {
+    pub zone: ProxiedValue<String, Name, NoRootName>,
+    pub server: IpAddr,
+}
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serve: ServeConfig,
     pub root_servers: Vec<IpAddr>,
     pub cache: CacheConfig,
+    #[serde(default)]
     pub forwarders: Vec<ForwarderConfig>,
     pub query: QueryConfig,
     pub control: ControlConfig,
     pub internal: InternalConfig,
-    include: Option<Vec<String>>,
+    #[serde(default)]
+    pub forward_zones: Vec<ForwardZoneConfig>,
+    #[serde(default)]
+    include: Option<Vec<String>>, // Placeholder
 }
 
 const DEFAULT_CONFIG: &'static str = include_str!("../extra/config-default.yaml");
@@ -243,6 +280,24 @@ mod tests {
         Config::default();
     }
     #[test]
+    fn test_no_root() {
+        let config_file = r#"---
+serve:
+    ip: "1.1.1.1"
+
+forwarders:
+    - servers:
+        - "1.2.3.4"
+
+forward_zones:
+    - zone: .
+      server: 1.2.3.4
+    - zone: test
+      server: 5.6.7.8
+        "#;
+        Config::from_str(config_file).unwrap_err();
+    }
+    #[test]
     fn test_merged_config() {
         let config_file = r#"---
 serve:
@@ -251,6 +306,12 @@ serve:
 forwarders:
     - servers:
         - "1.2.3.4"
+
+forward_zones:
+    - zone: rg
+      server: 1.2.3.4
+    - zone: test
+      server: 5.6.7.8
         "#;
         let config = Config::from_str(config_file).unwrap();
         let default_config = Config::default();
