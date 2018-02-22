@@ -176,6 +176,9 @@ impl Default for Config {
     }
 }
 fn merge_yaml(base: Yaml, input: Yaml) -> Yaml {
+    if input == Yaml::Null {
+        return base;
+    }
     if let Yaml::Array(array_input) = input {
         if let Yaml::Array(array_base) = base {
             let mut new_array: Vec<Yaml> = Default::default();
@@ -319,6 +322,16 @@ forward_zones:
         assert_eq!(config.serve.port, default_config.serve.port);
         assert_eq!(config.forwarders.len(), 1);
         assert_eq!(config.forwarders[0].servers[0], "1.2.3.4".parse::<IpAddr>().unwrap());
+    }
+    #[test]
+    fn test_empty_include() {
+        const INCLUDE_PATH: &str = "/tmp/c4683e82-9f96-47d3-afaf-c9823c185734";
+        let included_file = r#"---
+
+        "#;
+        { File::create(INCLUDE_PATH).unwrap().write_all(included_file.as_bytes()).unwrap(); }
+        Config::from_str(&format!("---\n\ninclude: [\"{}\"]", INCLUDE_PATH)).unwrap();
+        remove_file(INCLUDE_PATH).is_ok();
     }
     #[test]
     fn test_included_config() {
