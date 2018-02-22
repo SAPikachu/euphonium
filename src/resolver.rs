@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 use std::default::Default;
 use std::sync::mpsc::TryRecvError;
 use std::ops::Deref;
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use mioco;
 use mioco::timer::Timer;
@@ -19,7 +20,7 @@ use nscache::NsCache;
 use config::Config;
 use recursive::RecursiveResolver;
 use forwarding::ForwardingResolver;
-use query::query_multiple_handle_futures;
+use query::{query_multiple_handle_futures, query};
 use control::{ControlServer, Error as ControlError, ControlResult};
 
 // Idea: Use DNSSEC to check whether a domain is poisoned by GFW
@@ -39,7 +40,7 @@ pub struct Resolver {
     pub ns_cache: NsCache,
     pub config: Arc<Config>,
     forwarders: Vec<Arc<ForwardingResolver>>,
-    forward_zones: HashSet<Name>,
+    forward_zones: HashMap<Name, SocketAddr>,
     version: usize,
 }
 struct ResolverGlobal {
@@ -68,7 +69,7 @@ pub struct RcResolverWeak(Weak<RcResolverInner>, Weak<Mutex<ResolverGlobal>>);
 impl RcResolver {
     pub fn new(config: Config) -> Self {
         let forwarders = ForwardingResolver::create_all(&config);
-        let forward_zones = config.forward_zones.iter().map(|x| (*x.zone).clone()).collect();
+        let forward_zones = Self::init_forward_zones(&config);
         let (send, recv) = channel::<Query>();
         let config_rc = Arc::new(config);
         let resolver = Arc::new(Resolver {
@@ -100,7 +101,7 @@ impl RcResolver {
     fn update_config(self, new_config: Config) -> Self {
         info!("Updating config");
         let forwarders = ForwardingResolver::create_all(&new_config);
-        let forward_zones = new_config.forward_zones.iter().map(|x| (*x.zone).clone()).collect();
+        let forward_zones = Self::init_forward_zones(&new_config);
         let (send, recv) = channel::<Query>();
         let config_rc = Arc::new(new_config);
         let mut guard = self.global.lock().unwrap();
@@ -184,6 +185,11 @@ impl Default for RcResolverWeak {
     }
 }
 impl RcResolver {
+    fn init_forward_zones(config: &Config) -> HashMap<Name, SocketAddr> {
+        config.forward_zones.iter()
+        .map(|x| ((*x.zone).clone(), x.server.clone().into_socketaddr(53)))
+        .collect()
+    }
     fn init_predefined_ns(&self) {
         let mut guard = self.ns_cache.lock().unwrap();
         {
@@ -191,11 +197,6 @@ impl RcResolver {
             for ip in &self.config.root_servers {
                 entry.add_ns(*ip, Name::root(), None);
             }
-            entry.pin();
-        }
-        for forward_zone in &self.config.forward_zones {
-            let entry = guard.lookup_or_insert(&*forward_zone.zone);
-            entry.add_ns(forward_zone.server, forward_zone.zone.clone(), None);
             entry.pin();
         }
     }
@@ -280,19 +281,18 @@ impl RcResolver {
     pub fn resolve_recursive(self, q: Query) -> Result<Message> {
         RecursiveResolver::resolve(&q, self)
     }
-    fn is_forward_zone(&self, name: &Name) -> bool {
+    fn get_forward_server(&self, name: &Name) -> Option<SocketAddr> {
         if name.is_root() {
-            return false;
+            return None;
         }
-        if self.forward_zones.contains(name) {
-            return true;
+        match self.forward_zones.get(name) {
+            Some(x) => Some(*x),
+            None => self.get_forward_server(&name.base_name()),
         }
-        self.is_forward_zone(&name.base_name())
     }
     fn resolve_internal(&self, q: &Query) -> Result<Message> {
-        if self.is_forward_zone(q.name()) {
-            // Server is registered in nscache
-            return self.clone().resolve_recursive((*q).clone());
+        if let Some(server) = self.get_forward_server(q.name()) {
+            return query((*q).clone(), server, *self.config.query.timeout);
         }
         let mut futures = self.forwarders.iter().cloned().map(move |forwarder| {
             let qc = (*q).clone();

@@ -1,5 +1,5 @@
 use std;
-use std::net::{IpAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -146,11 +146,32 @@ pub struct InternalConfig {
     pub threads: usize,
     pub mio_notify_capacity: usize,
 }
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum IpWithOptionalPort {
+    WithPort(SocketAddr),
+    NoPort(IpAddr),
+}
+impl FromStr for IpWithOptionalPort {
+    type Err = std::net::AddrParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(IpWithOptionalPort::NoPort)
+        .or_else(|_| s.parse().map(IpWithOptionalPort::WithPort))
+    }
+}
+impl IpWithOptionalPort {
+    pub fn into_socketaddr(self, default_port: u16) -> SocketAddr {
+        match self {
+            IpWithOptionalPort::WithPort(x) => x,
+            IpWithOptionalPort::NoPort(x) => SocketAddr::new(x, default_port),
+        }
+    }
+}
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardZoneConfig {
     pub zone: ProxiedValue<String, Name, NoRootName>,
-    pub server: IpAddr,
+    pub server: IpWithOptionalPort,
 }
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -314,7 +335,7 @@ forward_zones:
     - zone: rg
       server: 1.2.3.4
     - zone: test
-      server: 5.6.7.8
+      server: 5.6.7.8:12345
         "#;
         let config = Config::from_str(config_file).unwrap();
         let default_config = Config::default();

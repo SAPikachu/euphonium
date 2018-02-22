@@ -107,18 +107,27 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
         return Ok(resp);
     }
 }
-fn get_bind_addr(target: &IpAddr) -> SocketAddr {
+fn get_bind_addr(target: &SocketAddr) -> SocketAddr {
     SocketAddr::new(match *target {
-        IpAddr::V4(_) => "0.0.0.0",
-        IpAddr::V6(_) => "::0",
+        SocketAddr::V4(_) => "0.0.0.0",
+        SocketAddr::V6(_) => "::0",
     }.parse().unwrap(), 0)
 }
-pub fn query(q: Query, addr: IpAddr, timeout: Duration) -> Result<Message> {
+pub trait IntoQueryTarget {
+    fn into_target(self) -> SocketAddr;
+}
+impl IntoQueryTarget for SocketAddr {
+    fn into_target(self) -> SocketAddr { self }
+}
+impl IntoQueryTarget for IpAddr {
+    fn into_target(self) -> SocketAddr { SocketAddr::new(self, 53) }
+}
+pub fn query<T: IntoQueryTarget>(q: Query, addr: T, timeout: Duration) -> Result<Message> {
     query_with_validator(q, addr, timeout, &mut DummyValidator)
 }
-pub fn query_with_validator<T: ResponseValidator>(q: Query, addr: IpAddr, timeout: Duration, validator: &mut T) -> Result<Message> {
-    let target = SocketAddr::new(addr, 53);
-    let mut transport = try!(UdpSocket::bound(&get_bind_addr(&addr))).with_timeout(timeout);
+pub fn query_with_validator<T: ResponseValidator, TTarget: IntoQueryTarget>(q: Query, target: TTarget, timeout: Duration, validator: &mut T) -> Result<Message> {
+    let target = target.into_target();
+    let mut transport = try!(UdpSocket::bound(&get_bind_addr(&target))).with_timeout(timeout);
     macro_rules! query_tcp {
         ($q: expr) => {{
             TcpStream::connect_with_timeout(&target, timeout)
@@ -199,7 +208,7 @@ mod tests {
         mioco_config_start(|| {
             let mut q = Query::new();
             q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
-            let result = query(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5)).unwrap();
+            let result = query::<IpAddr>(q, "8.8.8.8".parse().unwrap(), Duration::from_secs(5)).unwrap();
             assert!(result.answers().len() > 0);
         }).unwrap();
     }
