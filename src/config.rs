@@ -14,7 +14,7 @@ use serde_yaml;
 use serde::{Deserialize, Deserializer};
 use serde::de::Error as DesError;
 use yaml_rust::{Yaml, YamlLoader, YamlEmitter};
-use trust_dns::rr::Name;
+use trust_dns::rr::{Name, RecordSet, RecordType};
 
 use utils::IpSet;
 
@@ -85,6 +85,35 @@ impl<'de> FromStorage<'de, String> for Name {
         .map_err(|e| TDes::Error::custom(format!(
             "Failed to parse domain name {}: {}", storage, e,
         )))
+    }
+}
+impl<'de> FromStorage<'de, String> for RecordSet {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
+        use trust_dns::serialize::txt::{Lexer, Parser};
+        let mut storage = storage.clone();
+        storage += "\n";
+        let lexer = Lexer::new(&storage);
+        let (_, rrsets) = Parser::new().parse(lexer, Some(Name::root()))
+        .map_err(|e| TDes::Error::custom(format!(
+            "Failed to parse local record {}: {}", storage, e,
+        )))?;
+        if rrsets.len() != 1 {
+            return Err(TDes::Error::custom(format!(
+                "Failed to parse local record {}: Each entry must contain exactly one record set, instead of {}", storage, rrsets.len(),
+            )));
+        }
+        let rrset = rrsets.into_iter().next().unwrap().1;
+        if rrset.iter().len() == 0 {
+            return Err(TDes::Error::custom(format!(
+                "Failed to parse local record {}: No record in entry", storage,
+            )));
+        }
+        if rrset.record_type() == RecordType::CNAME && rrset.iter().len() != 1 {
+            return Err(TDes::Error::custom(format!(
+                "Failed to parse local record {}: CNAME entry must contain exactly one record", storage,
+            )));
+        }
+        Ok(rrset)
     }
 }
 macro_attr! {
@@ -186,6 +215,8 @@ pub struct Config {
     pub internal: InternalConfig,
     #[serde(default)]
     pub forward_zones: Vec<ForwardZoneConfig>,
+    #[serde(default)]
+    pub local_records: Vec<ProxiedValue<String, RecordSet>>,
     #[serde(default)]
     include: Option<Vec<String>>, // Placeholder
 }
@@ -298,10 +329,25 @@ mod tests {
     use std::net::IpAddr;
     use std::fs::{File, remove_file};
     use std::io::Write;
+    use trust_dns::rr::RecordType;
 
     #[test]
     fn test_default_config() {
         Config::default();
+    }
+    #[test]
+    fn test_local_records() {
+        let config_file = r#"---
+local_records:
+    - abc.test IN 1 A 1.2.3.4
+    - def.xxx IN 15 CNAME abc.test
+        "#;
+        let config = Config::from_str(config_file).unwrap();
+        assert_eq!(config.local_records.len(), 2);
+        assert_eq!(config.local_records[0].name(), &Name::parse("abc.test", Some(&Name::root())).unwrap());
+        assert_eq!(config.local_records[0].record_type(), RecordType::A);
+        assert_eq!(config.local_records[1].name(), &Name::parse("def.xxx", Some(&Name::root())).unwrap());
+        assert_eq!(config.local_records[1].record_type(), RecordType::CNAME);
     }
     #[test]
     fn test_no_root() {

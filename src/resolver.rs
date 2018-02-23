@@ -10,12 +10,12 @@ use mioco;
 use mioco::timer::Timer;
 use mioco::sync::Mutex;
 use mioco::sync::mpsc::{channel, Receiver};
-use trust_dns::op::{Message, ResponseCode, Query};
-use trust_dns::rr::{Name};
+use trust_dns::op::{Message, ResponseCode, Query, MessageType};
+use trust_dns::rr::{Name, RecordType, RData};
 use itertools::Itertools;
 
 use utils::{Result, MessageExt, AsDisplay, Future};
-use cache::Cache;
+use cache::{Cache, RecordSource};
 use nscache::NsCache;
 use config::Config;
 use recursive::RecursiveResolver;
@@ -191,13 +191,58 @@ impl RcResolver {
         .collect()
     }
     fn init_predefined_ns(&self) {
-        let mut guard = self.ns_cache.lock().unwrap();
         {
+            let mut guard = self.ns_cache.lock().unwrap();
             let entry = guard.lookup_or_insert(&Name::root());
             for ip in &self.config.root_servers {
                 entry.add_ns(*ip, Name::root(), None);
             }
             entry.pin();
+        }
+        let mut resolved_entries = HashMap::<Name, Vec<Message>>::new();
+        let mut pending_records = self.config.local_records.iter().map(|x| (*x).clone()).collect_vec();
+        let mut num_pending_records = pending_records.len();
+        loop {
+            pending_records = pending_records.into_iter().filter(|rrset| {
+                let mut msg = Message::new();
+                let mut q = Query::query(rrset.name().clone(), rrset.record_type());
+                msg.set_message_type(MessageType::Response);
+                msg.set_response_code(ResponseCode::NoError);
+                for rec in rrset.iter() {
+                    msg.add_answer(rec.clone());
+                }
+                if rrset.record_type() == RecordType::CNAME {
+                    if let &RData::CNAME(ref target_name) = rrset.iter().next().unwrap().rdata() {
+                        if let Some(resolved) = resolved_entries.get(&target_name).cloned() {
+                            for rrtype_msg in resolved {
+                                q.set_query_type(rrtype_msg.queries()[0].query_type());
+                                let mut new_msg = msg.clone();
+                                new_msg.add_answers(rrtype_msg.clone().take_answers());
+                                new_msg.add_query(q.clone());
+                                self.cache.update_from_message(&new_msg, RecordSource::Pinned);
+                                resolved_entries.entry(rrset.name().clone()).or_insert_with(Default::default).push(new_msg);
+                            }
+                        } else {
+                            return true;
+                        }
+                    } else {
+                        debug_assert!(false, "RRset contains no or invalid record");
+                        return false;
+                    }
+                } else {
+                    msg.add_query(q);
+                    self.cache.update_from_message(&msg, RecordSource::Pinned);
+                    resolved_entries.entry(rrset.name().clone()).or_insert_with(Default::default).push(msg);
+                }
+                false
+            }).collect();
+            if !pending_records.is_empty() || pending_records.len() == num_pending_records {
+                break;
+            }
+            num_pending_records = pending_records.len();
+        }
+        for rrset in pending_records {
+            warn!("Failed to resolve CNAME for local record {}", rrset.name());
         }
     }
     pub fn handle_control_command(&self, cmd: &str, params: &[String]) -> ControlResult {
@@ -324,6 +369,7 @@ mod tests {
     use trust_dns::op::*;
     use trust_dns::rr::*;
     use mioco;
+    use std::str::FromStr;
 
     use super::*;
     use ::mioco_config_start;
@@ -341,7 +387,79 @@ mod tests {
             let resolver = RcResolver::new(config);
             let mut q = Query::new();
             q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            q.set_query_type(RecordType::A);
             resolver.resolve_internal(&q).unwrap_err();
+        }).unwrap();
+    }
+    #[test]
+    fn local_records() {
+        env_logger::try_init().is_ok();
+        mioco_config_start(|| {
+            let config = Config::from_str(r#"---
+cache:
+    min_cache_ttl: 1
+    min_response_ttl: 1
+query:
+    timeout: 1
+local_records:
+    - abc.de3cf1b9 IN 1 A 1.2.3.4
+    - abc.de3cf1b9 IN 1 AAAA ffff::0
+    - def.c76a6f2e IN 1 CNAME abc.de3cf1b9
+    - ghi.3c8b4e39 IN 1 CNAME def.c76a6f2e
+    - invalid.50979d60b0e9 IN 1 CNAME nonexist.afdf80534855
+    - invalid2.a71fb2db7f92 IN 1 CNAME invalid.50979d60b0e9
+forward_zones:
+    - zone: afdf80534855
+      server: 127.0.0.254
+    - zone: 50979d60b0e9
+      server: 127.0.0.254
+    - zone: a71fb2db7f92
+      server: 127.0.0.254
+    - zone: de3cf1b9
+      server: 127.0.0.254
+    - zone: c76a6f2e
+      server: 127.0.0.254
+    - zone: 3c8b4e39
+      server: 127.0.0.254
+"#).unwrap();
+            let resolver = RcResolver::new(config);
+            let test = || {
+                let mut msg = Message::new();
+                msg.add_query(Query::query("abc.de3cf1b9.".parse().unwrap(), RecordType::A));
+                resolver.resolve(&mut msg).unwrap();
+                assert_eq!(msg.response_code(), ResponseCode::NoError);
+                assert_eq!(msg.answers().len(), 1);
+                assert_eq!(msg.answers()[0].rdata(), &RData::A("1.2.3.4".parse().unwrap()));
+                let mut msg = Message::new();
+                msg.add_query(Query::query("def.c76a6f2e.".parse().unwrap(), RecordType::A));
+                resolver.resolve(&mut msg).unwrap();
+                assert_eq!(msg.response_code(), ResponseCode::NoError);
+                assert_eq!(msg.answers().len(), 2);
+                assert_eq!(msg.answers()[1].rdata(), &RData::A("1.2.3.4".parse().unwrap()));
+                let mut msg = Message::new();
+                msg.add_query(Query::query("ghi.3c8b4e39.".parse().unwrap(), RecordType::A));
+                resolver.resolve(&mut msg).unwrap();
+                assert_eq!(msg.response_code(), ResponseCode::NoError);
+                assert_eq!(msg.answers().len(), 3);
+                assert_eq!(msg.answers()[2].rdata(), &RData::A("1.2.3.4".parse().unwrap()));
+                let mut msg = Message::new();
+                msg.add_query(Query::query("ghi.3c8b4e39.".parse().unwrap(), RecordType::AAAA));
+                resolver.resolve(&mut msg).unwrap();
+                assert_eq!(msg.response_code(), ResponseCode::NoError);
+                assert_eq!(msg.answers().len(), 3);
+                assert_eq!(msg.answers()[2].rdata(), &RData::AAAA("ffff::0".parse().unwrap()));
+                let mut msg = Message::new();
+                msg.add_query(Query::query("invalid.50979d60b0e9.".parse().unwrap(), RecordType::A));
+                resolver.resolve(&mut msg).unwrap_err();
+                let mut msg = Message::new();
+                msg.add_query(Query::query("invalid2.a71fb2db7f92.".parse().unwrap(), RecordType::A));
+                resolver.resolve(&mut msg).unwrap_err();
+            };
+            test();
+            test();
+            resolver.cache.expire_all();
+            test();
+            test();
         }).unwrap();
     }
     #[test]

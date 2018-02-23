@@ -332,9 +332,14 @@ impl CachePlain {
         let mut cache_msg = msg.clone_resp();
         cache_msg.add_query(msg.queries()[0].clone());
         let ttl_mode = self.ttl_mode(source);
+        let expiration = if source == RecordSource::Pinned {
+            None
+        } else {
+            Some(SystemTime::now() + Duration::from_secs(cache_ttl))
+        };
         self.records.insert(key, RecordEntry {
             message: cache_msg,
-            expiration: Some(SystemTime::now() + Duration::from_secs(cache_ttl)),
+            expiration: expiration,
             ttl: ttl_mode,
             expiration_notified: AtomicBool::new(false),
             source: source,
