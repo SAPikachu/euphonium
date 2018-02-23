@@ -326,17 +326,20 @@ impl RcResolver {
     pub fn resolve_recursive(self, q: Query) -> Result<Message> {
         RecursiveResolver::resolve(&q, self)
     }
-    fn get_forward_server(&self, name: &Name) -> Option<SocketAddr> {
+    fn get_forward_server(&self, name: &Name, accept_hostname_forwarder: bool) -> Option<SocketAddr> {
         if name.is_root() {
             return None;
         }
+        if accept_hostname_forwarder && name.num_labels() == 1 {
+            return self.forward_zones.get(&Name::root()).map(|x| *x);
+        }
         match self.forward_zones.get(name) {
             Some(x) => Some(*x),
-            None => self.get_forward_server(&name.base_name()),
+            None => self.get_forward_server(&name.base_name(), false),
         }
     }
     fn resolve_internal(&self, q: &Query) -> Result<Message> {
-        if let Some(server) = self.get_forward_server(q.name()) {
+        if let Some(server) = self.get_forward_server(q.name(), true) {
             return query((*q).clone(), server, *self.config.query.timeout);
         }
         let mut futures = self.forwarders.iter().cloned().map(move |forwarder| {
@@ -387,6 +390,25 @@ mod tests {
             let resolver = RcResolver::new(config);
             let mut q = Query::new();
             q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            q.set_query_type(RecordType::A);
+            resolver.resolve_internal(&q).unwrap_err();
+        }).unwrap();
+    }
+    #[test]
+    fn forward_zone_root() {
+        env_logger::try_init().is_ok();
+        mioco_config_start(|| {
+            let mut config = Config::default();
+            config.forward_zones.push(ForwardZoneConfig {
+                zone: Name::parse(".", Some(&Name::root())).unwrap().into(),
+                server: "127.0.0.254".parse().unwrap(),
+            });
+            let resolver = RcResolver::new(config);
+            let mut q = Query::new();
+            q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
+            q.set_query_type(RecordType::A);
+            resolver.resolve_internal(&q).unwrap();
+            q.set_name(Name::parse("com", Some(&Name::root())).unwrap());
             q.set_query_type(RecordType::A);
             resolver.resolve_internal(&q).unwrap_err();
         }).unwrap();

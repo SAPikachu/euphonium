@@ -199,7 +199,7 @@ impl IpWithOptionalPort {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardZoneConfig {
-    pub zone: ProxiedValue<String, Name, NoRootName>,
+    pub zone: ProxiedValue<String, Name>,
     pub server: IpWithOptionalPort,
 }
 #[derive(Deserialize, Debug)]
@@ -365,7 +365,7 @@ forward_zones:
     - zone: test
       server: 5.6.7.8
         "#;
-        Config::from_str(config_file).unwrap_err();
+        Config::from_str(config_file).unwrap();
     }
     #[test]
     fn test_merged_config() {
