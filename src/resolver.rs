@@ -144,6 +144,9 @@ impl RcResolver {
     pub fn to_weak(&self) -> RcResolverWeak {
         RcResolverWeak(Arc::downgrade(&self.0), Arc::downgrade(&self.global))
     }
+    pub fn to_keepalive(&self) -> Keepalive {
+        self.global.clone().into()
+    }
     pub fn current_weak() -> RcResolverWeak {
         mioco::get_userdata::<RcResolverWeak>()
         .map_or_else(RcResolverWeak::empty, |x| (*x).clone())

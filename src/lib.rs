@@ -29,6 +29,7 @@ extern crate data_encoding;
 extern crate nix;
 extern crate privdrop;
 extern crate linked_hash_map;
+extern crate pnet_datalink;
 
 #[cfg(test)]
 extern crate rustc_serialize;

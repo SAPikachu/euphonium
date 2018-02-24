@@ -98,8 +98,11 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
             };
         }
     });
+    let keepalive = resolver.to_keepalive();
+    let resolver_weak = resolver.to_weak();
     mioco::spawn(move || {
-        let mut resolver = resolver;
+        let _ = keepalive;
+        let mut resolver_weak = resolver_weak;
         loop {
             let (msg, addr) = match recv.recv_msg(None) {
                 Ok(x) => x,
@@ -109,10 +112,10 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
                 },
             };
             let sch_req = sch.clone();
-            resolver = resolver.sync_config();
-            let res = resolver.clone();
+            let resolver = resolver_weak.upgrade().unwrap();
+            resolver_weak = resolver.to_weak();
             mioco::spawn(move || {
-                let resp = handle_request(&res, &msg, TSend::should_truncate()).expect("handle_request should not return error");
+                let resp = handle_request(&resolver, &msg, TSend::should_truncate()).expect("handle_request should not return error");
                 sch_req.send((resp, addr)).expect("Result pipe should not break here");
             });
         }
@@ -120,23 +123,53 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
 }
 pub fn serve_tcp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<()>> {
     let listener = try!(TcpListener::bind(addr));
+    let keepalive = resolver.to_keepalive();
+    let resolver_weak = resolver.to_weak();
     Ok(mioco::spawn(move || {
-        let mut resolver = resolver;
+        let _ = keepalive;
+        let mut resolver_weak = resolver_weak;
         loop {
             let sock = listener.accept().expect("Failed to accept TCP socket");
             sock.set_nodelay(true).unwrap_or(());
             let sock_clone = sock.try_clone().expect("Failed to clone TCP socket");
-            resolver = resolver.sync_config();
+            let resolver = resolver_weak.upgrade().unwrap();
+            resolver_weak = resolver.to_weak();
             serve_transport_async(
                 sock.with_resetting_timeout(*resolver.config.serve.tcp_timeout),
                 sock_clone.with_resetting_timeout(*resolver.config.serve.tcp_timeout),
-                resolver.clone(),
+                resolver,
                 |e| trace!("Client TCP connection is broken: {:?}", e)
             );
         }
     }))
 }
 pub fn serve_udp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<()>> {
+    if addr.ip().is_unspecified() {
+        use pnet_datalink;
+        debug!("Binding UDP listener to all available IP addresses");
+        let mut handles = Vec::<JoinHandle<()>>::new();
+        for iface in pnet_datalink::interfaces() {
+            for ipnetwork in iface.ips {
+                let ip = ipnetwork.ip();
+                if ip.is_unspecified() {
+                    continue;
+                }
+                debug!("Binding to {}", ip);
+                match serve_udp(&SocketAddr::new(ip, addr.port()), resolver.clone()) {
+                    Err(e) => debug!("Failed to bind to {}: {}", ip, e),
+                    Ok(handle) => handles.push(handle),
+                }
+            }
+        }
+        if handles.is_empty() {
+            return Err(Error::Other("Failed to bind UDP listener".into(), None));
+        }
+        return Ok(mioco::spawn(move || {
+            for h in handles {
+                h.join().unwrap();
+            }
+        }));
+    }
     let sock : UdpSocket = try!(UdpSocket::bound(addr));
     let sock_clone = try!(sock.try_clone());
     Ok(serve_transport_async(
