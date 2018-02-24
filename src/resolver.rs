@@ -378,7 +378,7 @@ impl RcResolver {
         if name.is_root() {
             return None;
         }
-        if accept_hostname_forwarder && name.num_labels() == 1 {
+        if accept_hostname_forwarder && name.num_labels() == 1 && !self.zone_handlers.contains_key(name) {
             return self.zone_handlers.get(&Name::root());
         }
         match self.zone_handlers.get(name) {
@@ -497,6 +497,7 @@ local_records:
             resolver.resolve(&mut msg).unwrap();
             assert_eq!(msg.response_code(), ResponseCode::NXDomain);
             assert_eq!(msg.answers().len(), 0);
+            assert_eq!(msg.name_servers().len(), 1);
             let mut msg = Message::new();
             msg.add_query(Query::query("www.google.com.".parse().unwrap(), RecordType::A));
             resolver.resolve(&mut msg).unwrap();
