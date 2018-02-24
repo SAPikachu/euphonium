@@ -35,12 +35,48 @@ pub enum ErrorKind {
     RejectedIp,
     AlreadyQueried,
 }
+enum ZoneHandler {
+    Forward(SocketAddr),
+    Local(Name),
+}
+impl ZoneHandler {
+    pub fn handle(&self, msg: &mut Message, resolver: &RcResolver) -> Result<()> {
+        use self::ZoneHandler::*;
+        let mut q = msg.queries()[0].clone();
+        match *self {
+            Forward(ref server) => query(q, *server, *resolver.config.query.timeout).map(|x| { msg.copy_resp_from(&x); }),
+            Local(ref zone) => {
+                let query_name = q.name().clone();
+                q.set_name(zone.clone());
+                if resolver.cache.lookup(&q, |entry| {
+                    entry.fill_response(msg);
+                    for mut rec in msg.take_answers() {
+                        if rec.name() == zone {
+                            rec.set_name(query_name.clone());
+                        }
+                        msg.add_answer(rec);
+                    }
+                }).is_some() {
+                    return Ok(());
+                }
+                q.set_query_type(RecordType::SOA);
+                resolver.cache.lookup(&q, |entry| {
+                    entry.fill_response(msg);
+                    let answers = msg.take_answers();
+                    msg.insert_name_servers(answers);
+                });
+                msg.set_response_code(ResponseCode::NXDomain);
+                Ok(())
+            },
+        }
+    }
+}
 pub struct Resolver {
     pub cache: Cache,
     pub ns_cache: NsCache,
     pub config: Arc<Config>,
     forwarders: Vec<Arc<ForwardingResolver>>,
-    forward_zones: HashMap<Name, SocketAddr>,
+    zone_handlers: HashMap<Name, ZoneHandler>,
     version: usize,
 }
 struct ResolverGlobal {
@@ -63,13 +99,17 @@ macro_attr! {
     #[derive(Clone, NewtypeFrom!, NewtypeDeref!)]
     pub struct RcResolver(Arc<RcResolverInner>);
 }
+macro_attr! {
+    #[derive(Clone, NewtypeFrom!)]
+    pub struct Keepalive(Arc<Mutex<ResolverGlobal>>);
+}
 #[derive(Clone)]
 pub struct RcResolverWeak(Weak<RcResolverInner>, Weak<Mutex<ResolverGlobal>>);
 
 impl RcResolver {
     pub fn new(config: Config) -> Self {
         let forwarders = ForwardingResolver::create_all(&config);
-        let forward_zones = Self::init_forward_zones(&config);
+        let zone_handlers = Self::init_zone_handlers(&config);
         let (send, recv) = channel::<Query>();
         let config_rc = Arc::new(config);
         let resolver = Arc::new(Resolver {
@@ -77,7 +117,7 @@ impl RcResolver {
             ns_cache: NsCache::new(config_rc.clone()),
             config: config_rc.clone(),
             forwarders: forwarders,
-            forward_zones: forward_zones,
+            zone_handlers: zone_handlers,
             version: 0,
         });
         let current_version = Arc::new(ATOMIC_USIZE_INIT);
@@ -101,7 +141,7 @@ impl RcResolver {
     fn update_config(self, new_config: Config) -> Self {
         info!("Updating config");
         let forwarders = ForwardingResolver::create_all(&new_config);
-        let forward_zones = Self::init_forward_zones(&new_config);
+        let zone_handlers = Self::init_zone_handlers(&new_config);
         let (send, recv) = channel::<Query>();
         let config_rc = Arc::new(new_config);
         let mut guard = self.global.lock().unwrap();
@@ -110,7 +150,7 @@ impl RcResolver {
             ns_cache: NsCache::new(config_rc.clone()),
             config: config_rc.clone(),
             forwarders: forwarders,
-            forward_zones: forward_zones,
+            zone_handlers: zone_handlers,
             version: self.current_version.fetch_add(1, Ordering::SeqCst) + 1,
         });
         guard.current = resolver.clone();
@@ -188,10 +228,15 @@ impl Default for RcResolverWeak {
     }
 }
 impl RcResolver {
-    fn init_forward_zones(config: &Config) -> HashMap<Name, SocketAddr> {
-        config.forward_zones.iter()
-        .map(|x| ((*x.zone).clone(), x.server.clone().into_socketaddr(53)))
-        .collect()
+    fn init_zone_handlers(config: &Config) -> HashMap<Name, ZoneHandler> {
+        let mut ret = config.forward_zones.iter()
+        .map(|x| ((*x.zone).clone(), ZoneHandler::Forward(x.server.clone().into_socketaddr(53))))
+        .collect::<HashMap<_, _>>();
+        config.local_records.iter()
+        .filter(|x| x.record_type() == RecordType::SOA)
+        .map(|x| ret.insert(x.name().clone(), ZoneHandler::Local(x.name().clone())))
+        .count();
+        ret
     }
     fn init_predefined_ns(&self) {
         {
@@ -329,22 +374,19 @@ impl RcResolver {
     pub fn resolve_recursive(self, q: Query) -> Result<Message> {
         RecursiveResolver::resolve(&q, self)
     }
-    fn get_forward_server(&self, name: &Name, accept_hostname_forwarder: bool) -> Option<SocketAddr> {
+    fn get_zone_handler<'a>(&'a self, name: &Name, accept_hostname_forwarder: bool) -> Option<&'a ZoneHandler> {
         if name.is_root() {
             return None;
         }
         if accept_hostname_forwarder && name.num_labels() == 1 {
-            return self.forward_zones.get(&Name::root()).map(|x| *x);
+            return self.zone_handlers.get(&Name::root());
         }
-        match self.forward_zones.get(name) {
-            Some(x) => Some(*x),
-            None => self.get_forward_server(&name.base_name(), false),
+        match self.zone_handlers.get(name) {
+            Some(x) => Some(x),
+            None => self.get_zone_handler(&name.base_name(), false),
         }
     }
     fn resolve_internal(&self, q: &Query) -> Result<Message> {
-        if let Some(server) = self.get_forward_server(q.name(), true) {
-            return query((*q).clone(), server, *self.config.query.timeout);
-        }
         let mut futures = self.forwarders.iter().cloned().map(move |forwarder| {
             let qc = (*q).clone();
             let res = self.clone();
@@ -355,6 +397,13 @@ impl RcResolver {
         futures.push(Future::from_fn(move || res.resolve_recursive(qc)));
         query_multiple_handle_futures(&mut futures)
     }
+    pub fn resolve_query(&self, q: Query) -> Result<Message> {
+        let mut msg = Message::new();
+        msg.add_query(q);
+        msg.set_message_type(MessageType::Response);
+        self.resolve(&mut msg)?;
+        Ok(msg)
+    }
     pub fn resolve(&self, msg: &mut Message) -> Result<()> {
         debug_assert_eq!(msg.queries().len(), 1);
         debug_assert!(msg.answers().is_empty());
@@ -362,6 +411,9 @@ impl RcResolver {
         let cache_hit = self.cache.fill_response(msg);
         if cache_hit {
             return Ok(());
+        }
+        if let Some(handler) = self.get_zone_handler(msg.queries()[0].name(), true) {
+            return handler.handle(msg, self);
         }
         let resp = try!(self.resolve_internal(&msg.queries()[0]));
         msg.copy_resp_from(&resp);
@@ -394,7 +446,7 @@ mod tests {
             let mut q = Query::new();
             q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
             q.set_query_type(RecordType::A);
-            resolver.resolve_internal(&q).unwrap_err();
+            resolver.resolve_query(q.clone()).unwrap_err();
         }).unwrap();
     }
     #[test]
@@ -410,10 +462,91 @@ mod tests {
             let mut q = Query::new();
             q.set_name(Name::parse("www.google.com", Some(&Name::root())).unwrap());
             q.set_query_type(RecordType::A);
-            resolver.resolve_internal(&q).unwrap();
+            resolver.resolve_query(q.clone()).unwrap();
             q.set_name(Name::parse("com", Some(&Name::root())).unwrap());
             q.set_query_type(RecordType::A);
-            resolver.resolve_internal(&q).unwrap_err();
+            resolver.resolve_query(q.clone()).unwrap_err();
+        }).unwrap();
+    }
+    #[test]
+    fn local_zones() {
+        env_logger::try_init().is_ok();
+        mioco_config_start(|| {
+            let config = Config::from_str(r#"---
+cache:
+    min_cache_ttl: 1
+    min_response_ttl: 1
+query:
+    timeout: 1
+local_records:
+    - google.com IN 1 A 1.2.3.4
+    - google.com IN 10800 SOA localhost. nobody.invalid. 1 3600 1200 604800 10800
+    - x.google.com IN 1 A 5.6.7.8
+    - y.google.com IN 1 AAAA ffff::0
+"#).unwrap();
+            let resolver = RcResolver::new(config);
+            let mut msg = Message::new();
+            msg.add_query(Query::query("google.com.".parse().unwrap(), RecordType::A));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NoError);
+            assert_eq!(msg.answers().len(), 1);
+            assert_eq!(msg.answers()[0].name(), msg.queries()[0].name());
+            assert_eq!(msg.answers()[0].rdata(), &RData::A("1.2.3.4".parse().unwrap()));
+            let mut msg = Message::new();
+            msg.add_query(Query::query("google.com.".parse().unwrap(), RecordType::AAAA));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NXDomain);
+            assert_eq!(msg.answers().len(), 0);
+            let mut msg = Message::new();
+            msg.add_query(Query::query("www.google.com.".parse().unwrap(), RecordType::A));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NoError);
+            assert_eq!(msg.answers().len(), 1);
+            assert_eq!(msg.answers()[0].name(), msg.queries()[0].name());
+            assert_eq!(msg.answers()[0].rdata(), &RData::A("1.2.3.4".parse().unwrap()));
+            let mut msg = Message::new();
+            msg.add_query(Query::query("www.google.com.".parse().unwrap(), RecordType::AAAA));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NXDomain);
+            assert_eq!(msg.answers().len(), 0);
+            let mut msg = Message::new();
+            msg.add_query(Query::query("www.www.google.com.".parse().unwrap(), RecordType::A));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NoError);
+            assert_eq!(msg.answers().len(), 1);
+            assert_eq!(msg.answers()[0].name(), msg.queries()[0].name());
+            assert_eq!(msg.answers()[0].rdata(), &RData::A("1.2.3.4".parse().unwrap()));
+            let mut msg = Message::new();
+            msg.add_query(Query::query("www.www.google.com.".parse().unwrap(), RecordType::AAAA));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NXDomain);
+            assert_eq!(msg.answers().len(), 0);
+            let mut msg = Message::new();
+            msg.add_query(Query::query("x.google.com.".parse().unwrap(), RecordType::A));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NoError);
+            assert_eq!(msg.answers().len(), 1);
+            assert_eq!(msg.answers()[0].name(), msg.queries()[0].name());
+            assert_eq!(msg.answers()[0].rdata(), &RData::A("5.6.7.8".parse().unwrap()));
+            let mut msg = Message::new();
+            msg.add_query(Query::query("x.google.com.".parse().unwrap(), RecordType::AAAA));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NXDomain);
+            assert_eq!(msg.answers().len(), 0);
+            let mut msg = Message::new();
+            msg.add_query(Query::query("y.google.com.".parse().unwrap(), RecordType::AAAA));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NoError);
+            assert_eq!(msg.answers().len(), 1);
+            assert_eq!(msg.answers()[0].name(), msg.queries()[0].name());
+            assert_eq!(msg.answers()[0].rdata(), &RData::AAAA("ffff::0".parse().unwrap()));
+            let mut msg = Message::new();
+            msg.add_query(Query::query("y.google.com.".parse().unwrap(), RecordType::A));
+            resolver.resolve(&mut msg).unwrap();
+            assert_eq!(msg.response_code(), ResponseCode::NoError);
+            assert_eq!(msg.answers().len(), 1);
+            assert_eq!(msg.answers()[0].name(), msg.queries()[0].name());
+            assert_eq!(msg.answers()[0].rdata(), &RData::A("1.2.3.4".parse().unwrap()));
         }).unwrap();
     }
     #[test]
