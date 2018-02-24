@@ -232,14 +232,12 @@ fn merge_yaml(base: Yaml, input: Yaml) -> Yaml {
         return base;
     }
     if let Yaml::Array(array_input) = input {
-        if let Yaml::Array(array_base) = base {
+        if array_input[0] == Yaml::String("-- APPEND --".into()) {
             let mut new_array: Vec<Yaml> = Default::default();
-            if array_input[0] == Yaml::String("-- APPEND --".into()) {
+            if let Yaml::Array(array_base) = base {
                 new_array.extend(array_base);
-                new_array.extend(array_input.into_iter().skip(1));
-            } else {
-                new_array.extend(array_input);
             }
+            new_array.extend(array_input.into_iter().skip(1));
             return Yaml::Array(new_array);
         } else {
             return Yaml::Array(array_input);
