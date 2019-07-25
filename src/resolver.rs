@@ -318,6 +318,7 @@ impl RcResolver {
     }
     #[allow(while_let_loop)]
     fn run_cache_cleaner(&self, ch: Receiver<Query>) {
+        let version = self.version;
         let resolver_weak = self.to_weak();
         let gc_interval = *self.config.cache.gc_interval;
         mioco::spawn(move || {
@@ -334,11 +335,14 @@ impl RcResolver {
                     r:ch => {},
                 );
                 if let Some(res) = resolver_weak.upgrade() {
+                    if res.version != version {
+                        info!("Resolver is reloaded, old cache update coroutine is exiting");
+                        return;
+                    }
                     if timer.try_read().is_some() {
                         res.cache.gc();
                         res.ns_cache.gc();
                         timer = create_timer();
-                        continue;
                     }
                     let q = match ch.try_recv() {
                         Ok(q) => q,
