@@ -339,10 +339,10 @@ impl CachePlain {
         };
         self.records.insert(key, RecordEntry {
             message: cache_msg,
-            expiration: expiration,
+            expiration,
             ttl: ttl_mode,
             expiration_notified: AtomicBool::new(false),
-            source: source,
+            source,
             record_expiration_counter: self.shared.global_expiration_counter.load(
                 Ordering::Relaxed,
             ),
