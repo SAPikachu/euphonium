@@ -23,6 +23,7 @@ pub enum ErrorKind {
     InvalidId,
     TruncatedBogus(Message),
     ValidationFailure(Message),
+    UpstreamServer(Message),
 }
 #[derive(Eq, PartialEq, Debug, Copy, Clone)]
 pub enum EdnsMode {
@@ -162,6 +163,7 @@ pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>)
     if futures.is_empty() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
+    let mut last_error: Option<Error> = None;
     loop {
         let result_index = Future::wait_any(futures);
         let result = futures.remove(result_index).consume();
@@ -189,7 +191,25 @@ pub fn query_multiple_handle_futures(futures: &mut Vec<Future<Result<Message>>>)
         };
         if should_return {
             debug!("query_multiple_handle_futures: OK: {}", result.is_ok());
+            if let Err(e) = result {
+                return match e {
+                    x @ Error::Resolver(ResolverErrorKind::AlreadyQueried) |
+                    x @ Error::Resolver(ResolverErrorKind::LostRace) => match last_error {
+                        None => Err(x),
+                        Some(err) => Err(err),
+                    },
+                    e => Err(e),
+                };
+            }
             return result;
+        } else {
+            // Save meaningful error
+            last_error = match result {
+                Err(Error::Resolver(ResolverErrorKind::AlreadyQueried)) |
+                Err(Error::Resolver(ResolverErrorKind::LostRace)) => last_error,
+                Err(e) => Some(e),
+                Ok(x) => last_error.or(Some(Error::Query(ErrorKind::UpstreamServer(x)))),
+            };
         }
     }
 }
