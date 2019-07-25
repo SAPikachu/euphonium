@@ -327,8 +327,8 @@ impl CachePlain {
         if msg.response_code() != ResponseCode::NoError {
             cache_ttl = min(cache_ttl, self.shared.config.cache.neg_cache_ttl as u64);
         }
-        debug!("Updating cache: {} -> {} (TTL: {})",
-               msg.queries()[0].as_disp(), msg.as_disp(), cache_ttl);
+        debug!("Updating cache: {} -> {} (TTL: {}, Source: {:?})",
+               msg.queries()[0].as_disp(), msg.as_disp(), cache_ttl, source);
         let mut cache_msg = msg.clone_resp();
         cache_msg.add_query(msg.queries()[0].clone());
         let ttl_mode = self.ttl_mode(source);

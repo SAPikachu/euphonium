@@ -11,7 +11,7 @@ use trust_dns::rr::{DNSClass, RecordType};
 use trust_dns_proto::rr::dnssec::rdata::DNSSECRecordType;
 use trust_dns_proto::serialize::binary::BinEncodable;
 
-use utils::{Result, Error, MessageExt, WithTimeout};
+use utils::{Result, Error, MessageExt, WithTimeout, AsDisplay};
 use transport::{DnsTransport};
 use query::{EDNS_VER};
 use resolver::{RcResolver};
@@ -47,7 +47,7 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
     match resolver.resolve(&mut ret) {
         Ok(_) => { /* Message is filled with answers */ },
         Err(e) => {
-            warn!("Resolver returned error: {:?}", e);
+            warn!("Resolver returned error for {}: {:?}", msg.queries()[0].as_disp(), e);
             ret.set_response_code(ResponseCode::ServFail);
         },
     };

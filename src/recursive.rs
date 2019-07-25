@@ -161,6 +161,7 @@ impl RecursiveResolver {
         if guard.len() >= 2048 {
             debug_assert!(false);
             warn!("Already queried too many servers for {:?}, bug or attack?", self.state.query);
+            warn!("Queried items: {}", guard.iter().map(|x| format!("{:?}", x)).collect_vec().join(", "));
             return false;
         }
         trace!("register_query: {:?}", item);
