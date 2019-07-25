@@ -40,6 +40,12 @@ enum SubqueryState {
     Completed(Message),
     Error,
 }
+#[derive(Eq, PartialEq, Hash, Clone, Copy, Debug)]
+enum ResolveNextCacheMode {
+    UseCache,
+    IgnoreCache,
+}
+use self::ResolveNextCacheMode::{UseCache, IgnoreCache};
 struct RecursiveResolverState {
     queried_items: Arc<Mutex<HashSet<QueriedItem>>>,
     query: Query,
@@ -114,7 +120,7 @@ impl RecursiveResolver {
         .set_query_class(DNSClass::IN);
         // TODO: IPv6
         self.maybe_stop()?;
-        let result = try!(self.resolve_next(&query));
+        let result = try!(self.resolve_next(&query, UseCache));
         let ips = result.answers().iter().filter_map(|x| match *x.rdata() {
             RData::A(ref address) => Some((IpAddr::V4(*address), x.ttl())),
             _ => None,
@@ -281,7 +287,7 @@ impl RecursiveResolver {
             debug!("[{}] CNAME referral: {}", self.state.query.name(), next_name);
             let mut next_query = self.state.query.clone();
             next_query.set_name(next_name);
-            match self.resolve_next(&next_query) {
+            match self.resolve_next(&next_query, IgnoreCache) {
                 Err(Error::Resolver(ErrorKind::AlreadyQueried)) => {
                     return Err(Error::Resolver(ErrorKind::AlreadyQueried));
                 },
@@ -390,11 +396,13 @@ impl RecursiveResolver {
             None => None,
         }
     }
-    fn resolve_next(&self, q: &Query) -> Result<Message> {
+    fn resolve_next(&self, q: &Query, mode: ResolveNextCacheMode) -> Result<Message> {
         use std::collections::hash_map::Entry::{Occupied, Vacant};
         use ::recursive::SubqueryState::{Pending, Completed, Error};
-        if let Some(msg) = self.resolve_from_cache(q) {
-            return Ok(msg);
+        if mode == UseCache {
+            if let Some(msg) = self.resolve_from_cache(q) {
+                return Ok(msg);
+            }
         }
         try!(self.maybe_stop());
         if *q == self.state.query {
@@ -497,7 +505,7 @@ impl RecursiveResolver {
 }
 impl<'a> SubqueryResolver for &'a RecursiveResolver {
     fn resolve_sub(&self, q: Query) -> Result<Message> {
-        match self.resolve_next(&q) {
+        match self.resolve_next(&q, UseCache) {
             val @ Err(Error::Resolver(ErrorKind::LostRace)) |
             val @ Err(Error::Resolver(ErrorKind::AlreadyQueried)) => {
                 match self.resolve_from_cache(&q) {
