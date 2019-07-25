@@ -1,8 +1,8 @@
 use std::sync::{Arc};
 use std::net::{IpAddr};
 
-use trust_dns::op::{Message, Query};
-use trust_dns::rr::RData;
+use trust_dns::op::{Message, Query, ResponseCode};
+use trust_dns::rr::{RData, RecordType};
 use itertools::Itertools;
 
 use utils::{Result};
@@ -28,7 +28,10 @@ impl ForwardingResolver {
     }
     pub fn resolve(&self, q: Query, parent: RcResolver) -> Result<Message> {
         let msg = try!(query(q.clone(), self.server, *parent.config.query.timeout));
-        if !msg.answers().iter().any(|x| x.rr_type() == q.query_type()) {
+        if self.accepted_ips.is_some() && !msg.answers().iter().any(|x| x.rr_type() == q.query_type()) {
+            if ![RecordType::A, RecordType::AAAA].contains(&q.query_type()) && msg.response_code() != ResponseCode::NoError {
+                return Ok(msg);
+            }
             // Invalid response
             return Err(ErrorKind::RejectedIp.into());
         }
