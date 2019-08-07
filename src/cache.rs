@@ -288,7 +288,6 @@ impl CachePlain {
             return false;
         }
         let key: Key = (&msg.queries()[0]).into();
-        let msg_has_final_answer = msg.answers().iter().any(|x| x.rr_type() == msg.queries()[0].query_type());
         let msg_has_cname = msg.answers().iter().any(|x| x.rr_type() == RecordType::CNAME);
         if let Some(existing) = self.records.get(&key) {
             if existing.source > source {
@@ -310,25 +309,20 @@ impl CachePlain {
                 }
             }
         }
-        if msg.queries()[0].query_type() != RecordType::CNAME && msg_has_cname && !msg_has_final_answer {
-            // Possibly query error
-            return false;
-        }
         let all_records = msg.answers().iter()
         .chain(msg.name_servers())
         .chain(msg.additionals())
         .filter(|x| x.rr_type() != RecordType::OPT);
-        // TODO: NXDomain should be cached for shorter time
         let min_cache_ttl = self.shared.config.cache.min_cache_ttl;
         let mut cache_ttl = max(
             min_cache_ttl,
             all_records.map(|x| x.ttl()).min().unwrap_or(min_cache_ttl),
         ) as u64;
-        if msg.response_code() != ResponseCode::NoError {
+        if msg.response_code() != ResponseCode::NoError || msg.answers().len() == 0 {
             cache_ttl = min(cache_ttl, self.shared.config.cache.neg_cache_ttl as u64);
         }
-        debug!("Updating cache: {} -> {} (TTL: {}, Source: {:?})",
-               msg.queries()[0].as_disp(), msg.as_disp(), cache_ttl, source);
+        debug!("Updating cache: {} -> {} (TTL: {})",
+               msg.queries()[0].as_disp(), msg.as_disp(), cache_ttl);
         let mut cache_msg = msg.clone_resp();
         cache_msg.add_query(msg.queries()[0].clone());
         let ttl_mode = self.ttl_mode(source);
