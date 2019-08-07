@@ -60,6 +60,10 @@ fn query_core<TTransport, TValidator>(q: Query, mut transport: TTransport, edns_
                                 last_bogus_msg.take().unwrap()
                             ).into()
                         },
+                        io::ErrorKind::AddrNotAvailable => {
+                            debug!("AddrNotAvailable -> {}", transport);
+                            Error::Io(e)
+                        },
                         _ => Error::Io(e),
                     }
                 },
