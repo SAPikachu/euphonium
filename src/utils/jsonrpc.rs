@@ -33,4 +33,3 @@ pub struct JsonRpcResponse {
     pub result: Option<String>,
     pub error: Option<String>,
 }
-

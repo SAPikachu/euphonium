@@ -1,19 +1,19 @@
 use std;
-use std::io::{Result, BufReader, BufRead, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::fs::{metadata, set_permissions, remove_file};
-use std::sync::mpsc::TryRecvError;
 use std::fmt::{Debug, Display};
+use std::fs::{metadata, remove_file, set_permissions};
+use std::io::{BufRead, BufReader, Result, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::sync::mpsc::TryRecvError;
 use std::sync::Arc;
 
 use mioco;
-use mioco::sync::mpsc::{channel, Sender, Receiver};
+use mioco::sync::mpsc::{channel, Receiver, Sender};
 use mioco::sync::Mutex;
 use mioco::unix::UnixListener;
 use serde_json;
 
-use resolver::{RcResolverWeak, RcResolver};
-use utils::{WithTimeout, JsonRpcRequest};
+use crate::resolver::{RcResolver, RcResolverWeak};
+use crate::utils::{JsonRpcRequest, WithTimeout};
 
 pub trait FormattableError: std::error::Error + Display + Debug {}
 impl<T> FormattableError for T where T: std::error::Error + Display + Debug {}
@@ -23,7 +23,7 @@ quick_error! {
         UnknownCommand {
             description("Unknown command")
         }
-        Wrapped(inner: Box<FormattableError>) {
+        Wrapped(inner: Box<dyn FormattableError>) {
             description(inner.description())
             from()
             display("{}", inner)
@@ -68,14 +68,18 @@ impl ControlServer {
     }
     fn serve(resolver: Arc<Mutex<RcResolverWeak>>, live_notifier: Receiver<()>) -> Result<()> {
         let listener = {
-            let resolver = resolver.lock().unwrap().upgrade().expect("Resolver is not set");
+            let resolver = resolver
+                .lock()
+                .unwrap()
+                .upgrade()
+                .expect("Resolver is not set");
             let sock_path = &resolver.config.control.sock_path;
             // Clean up old socket
-            remove_file(sock_path).is_ok();
-            let listener = try!(UnixListener::bind(sock_path));
-            let mut perm = try!(metadata(sock_path)).permissions();
+            remove_file(sock_path).ok();
+            let listener = (UnixListener::bind(sock_path))?;
+            let mut perm = (metadata(sock_path))?.permissions();
             perm.set_mode(**resolver.config.control.sock_permission);
-            try!(set_permissions(sock_path, perm));
+            (set_permissions(sock_path, perm))?;
             listener
         };
         mioco::spawn(move || {
@@ -101,10 +105,11 @@ impl ControlServer {
                     None => {
                         debug!("Resolver is dropped, closing control channel");
                         return;
-                    },
+                    }
                 };
-                let result = listener.try_accept()
-                .expect("Unable to accept from control socket");
+                let result = listener
+                    .try_accept()
+                    .expect("Unable to accept from control socket");
                 let sock = match result {
                     Some(sock) => sock,
                     None => continue,
@@ -123,13 +128,11 @@ impl ControlServer {
                             "Control socket received an invalid request: {}, {:?}",
                             buf, e,
                         );
-                        continue
-                    },
+                        continue;
+                    }
                 };
                 info!("Command: {}", req.method);
-                let resp = match resolver.handle_control_command(
-                    &req.method, &req.params,
-                ) {
+                let resp = match resolver.handle_control_command(&req.method, &req.params) {
                     Ok(x) => req.result(x),
                     Err(e) => req.error(e.to_string()),
                 };

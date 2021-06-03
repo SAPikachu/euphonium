@@ -1,6 +1,7 @@
 extern crate serde;
 extern crate serde_json;
-#[macro_use] extern crate serde_derive;
+#[macro_use]
+extern crate serde_derive;
 extern crate docopt;
 extern crate env_logger;
 extern crate eulib;
@@ -11,8 +12,8 @@ use std::io::Write;
 use docopt::Docopt;
 use mioco::unix::UnixSocket;
 
-use eulib::utils::{JsonRpcRequest, JsonRpcResponse};
 use eulib::config::Config;
+use eulib::utils::{JsonRpcRequest, JsonRpcResponse};
 
 const USAGE: &'static str = "
 Usage: euctl [-s SOCK] <command> [<params>...]
@@ -27,16 +28,15 @@ struct Args {
     arg_command: String,
     arg_params: Vec<String>,
 }
-const VERSION_FULL: &'static str = concat!(
-    "euctl ", env!("CARGO_PKG_VERSION"),
-);
+const VERSION_FULL: &'static str = concat!("euctl ", env!("CARGO_PKG_VERSION"),);
 
 fn main() {
     env_logger::init();
-    let args: Args = Docopt::new(USAGE).unwrap()
-    .version(Some(VERSION_FULL.into()))
-    .deserialize()
-    .unwrap_or_else(|e| e.exit());
+    let args: Args = Docopt::new(USAGE)
+        .unwrap()
+        .version(Some(VERSION_FULL.into()))
+        .deserialize()
+        .unwrap_or_else(|e| e.exit());
     let mut sock_path = args.flag_sock.clone();
     if sock_path.is_empty() {
         sock_path.push_str(&Config::default().control.sock_path);
@@ -56,5 +56,6 @@ fn main() {
             println!("Error: {}", resp.error.unwrap());
             std::process::exit(1);
         }
-    }).unwrap();
+    })
+    .unwrap();
 }

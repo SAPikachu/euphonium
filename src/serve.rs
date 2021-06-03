@@ -1,24 +1,24 @@
-use std::net::{SocketAddr};
 use std::cmp::max;
+use std::net::SocketAddr;
 
 use mioco;
-use mioco::JoinHandle;
+use mioco::sync::mpsc::channel;
+use mioco::tcp::TcpListener;
 use mioco::udp::UdpSocket;
-use mioco::tcp::{TcpListener};
-use mioco::sync::mpsc::{channel};
-use trust_dns::op::{Message, ResponseCode, Edns, OpCode};
-use trust_dns::rr::{DNSClass, RecordType};
+use mioco::JoinHandle;
+use trust_dns_proto::op::{Edns, Message, OpCode, ResponseCode};
 use trust_dns_proto::rr::dnssec::rdata::DNSSECRecordType;
+use trust_dns_proto::rr::{DNSClass, RecordType};
 use trust_dns_proto::serialize::binary::BinEncodable;
 
-use utils::{Result, Error, MessageExt, WithTimeout, AsDisplay};
-use transport::{DnsTransport};
-use query::{EDNS_VER};
-use resolver::{RcResolver};
+use crate::query::EDNS_VER;
+use crate::resolver::RcResolver;
+use crate::transport::DnsTransport;
+use crate::utils::{AsDisplay, Error, MessageExt, Result, WithTimeout};
 
 /// This function should never fail, otherwise we have a panic
 fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -> Result<Vec<u8>> {
-    let mut ret : Message = msg.new_resp();
+    let mut ret: Message = msg.new_resp();
     ret.set_recursion_available(true);
     let mut have_dnssec = false;
     if let Some(req_edns) = msg.edns() {
@@ -45,21 +45,27 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
         return ret.to_bytes().map_err(|e| e.into());
     }
     match resolver.resolve(&mut ret) {
-        Ok(_) => { /* Message is filled with answers */ },
+        Ok(_) => { /* Message is filled with answers */ }
         Err(e) => {
-            warn!("Resolver returned error for {}: {:?}", msg.queries()[0].as_disp(), e);
+            warn!(
+                "Resolver returned error for {}: {:?}",
+                msg.queries()[0].as_disp(),
+                e
+            );
             ret.set_response_code(ResponseCode::ServFail);
-        },
+        }
     };
     if !have_dnssec {
         ret = ret.strip_dnssec_records();
     } else {
-        let is_authenticated = ret.answers().iter()
-        .chain(ret.name_servers())
-        .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG));
+        let is_authenticated = ret
+            .answers()
+            .iter()
+            .chain(ret.name_servers())
+            .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG));
         ret.set_authentic_data(is_authenticated);
     }
-    let mut bytes = try!(ret.to_bytes());
+    let mut bytes = (ret.to_bytes())?;
     if should_truncate && bytes.len() > (msg.max_payload() as usize) {
         ret.set_truncated(true);
         ret.take_name_servers();
@@ -75,28 +81,34 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
     }
     Ok(bytes)
 }
-#[allow(similar_names)]
-fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, resolver: RcResolver, on_error: F) -> JoinHandle<()>
-    where TRecv: DnsTransport + Send + 'static,
-          TSend: DnsTransport + Send + 'static,
-          F: FnOnce(Error) + Send + 'static,
+
+fn serve_transport_async<TRecv, TSend, F>(
+    mut recv: TRecv,
+    mut send: TSend,
+    resolver: RcResolver,
+    on_error: F,
+) -> JoinHandle<()>
+where
+    TRecv: DnsTransport + Send + 'static,
+    TSend: DnsTransport + Send + 'static,
+    F: FnOnce(Error) + Send + 'static,
 {
     let (sch, rch) = channel::<(Vec<u8>, Option<SocketAddr>)>();
-    mioco::spawn(move || {
-        loop {
-            match rch.recv() {
-                Ok((buf, addr)) => {
-                    match send.send_msg_bytes(&buf, addr.as_ref()) {
-                        Ok(_) => { },
-                        Err(e) => { warn!("Failed to respond to DNS request: {:?}", e); },
-                    };
-                },
-                Err(_) => {
-                    trace!("Channel is broken");
-                    return;
-                },
-            };
-        }
+    mioco::spawn(move || loop {
+        match rch.recv() {
+            Ok((buf, addr)) => {
+                match send.send_msg_bytes(&buf, addr.as_ref()) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!("Failed to respond to DNS request: {:?}", e);
+                    }
+                };
+            }
+            Err(_) => {
+                trace!("Channel is broken");
+                return;
+            }
+        };
     });
     let keepalive = resolver.to_keepalive();
     let resolver_weak = resolver.to_weak();
@@ -109,20 +121,23 @@ fn serve_transport_async<TRecv, TSend, F>(mut recv: TRecv, mut send: TSend, reso
                 Err(e) => {
                     on_error(e);
                     return;
-                },
+                }
             };
             let sch_req = sch.clone();
             let resolver = resolver_weak.upgrade().unwrap();
             resolver_weak = resolver.to_weak();
             mioco::spawn(move || {
-                let resp = handle_request(&resolver, &msg, TSend::should_truncate()).expect("handle_request should not return error");
-                sch_req.send((resp, addr)).expect("Result pipe should not break here");
+                let resp = handle_request(&resolver, &msg, TSend::should_truncate())
+                    .expect("handle_request should not return error");
+                sch_req
+                    .send((resp, addr))
+                    .expect("Result pipe should not break here");
             });
         }
     })
 }
 pub fn serve_tcp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<()>> {
-    let listener = try!(TcpListener::bind(addr));
+    let listener = (TcpListener::bind(addr))?;
     let keepalive = resolver.to_keepalive();
     let resolver_weak = resolver.to_weak();
     Ok(mioco::spawn(move || {
@@ -138,14 +153,13 @@ pub fn serve_tcp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<(
                 sock.with_resetting_timeout(*resolver.config.serve.tcp_timeout),
                 sock_clone.with_resetting_timeout(*resolver.config.serve.tcp_timeout),
                 resolver,
-                |e| trace!("Client TCP connection is broken: {:?}", e)
+                |e| trace!("Client TCP connection is broken: {:?}", e),
             );
         }
     }))
 }
 pub fn serve_udp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<()>> {
     if addr.ip().is_unspecified() {
-        use pnet_datalink;
         debug!("Binding UDP listener to all available IP addresses");
         let mut handles = Vec::<JoinHandle<()>>::new();
         for iface in pnet_datalink::interfaces() {
@@ -170,14 +184,15 @@ pub fn serve_udp(addr: &SocketAddr, resolver: RcResolver) -> Result<JoinHandle<(
             }
         }));
     }
-    let sock : UdpSocket = try!(UdpSocket::bound(addr));
-    let sock_clone = try!(sock.try_clone());
+    let sock: UdpSocket = (UdpSocket::bound(addr))?;
+    let sock_clone = (sock.try_clone())?;
     Ok(serve_transport_async(
-        sock, sock_clone, resolver, |e| {
-            match e {
-                Error::Proto(reason) => warn!("Invalid DNS request: {:?}", reason),
-                e2 => panic!("UDP listener is broken: {:?}", e2),
-            }
-        }
+        sock,
+        sock_clone,
+        resolver,
+        |e| match e {
+            Error::Proto(reason) => warn!("Invalid DNS request: {:?}", reason),
+            e2 => panic!("UDP listener is broken: {:?}", e2),
+        },
     ))
 }

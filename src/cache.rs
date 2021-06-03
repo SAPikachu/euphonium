@@ -1,22 +1,22 @@
-use std::time::{SystemTime, Duration, Instant};
+use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::cmp::{min, max};
 use std::hash::Hash;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
-use mioco;
-use mioco::sync::{Mutex};
-use mioco::sync::mpsc::{Sender};
-use trust_dns::rr::{Name, RecordType, Record, DNSClass};
-use trust_dns::op::{Message, OpCode, MessageType, ResponseCode, Query};
-use trust_dns_proto::rr::dnssec::rdata::DNSSECRecordType;
-use parking_lot::Mutex as PlMutex;
 use itertools::Itertools;
+use mioco;
+use mioco::sync::mpsc::Sender;
+use mioco::sync::Mutex;
+use parking_lot::Mutex as PlMutex;
 use time::Duration as ChDuration;
+use trust_dns_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+use trust_dns_proto::rr::dnssec::rdata::DNSSECRecordType;
+use trust_dns_proto::rr::{DNSClass, Name, Record, RecordType};
 
-use utils::{MessageExt, AsDisplay};
-use config::Config;
+use crate::config::Config;
+use crate::utils::{AsDisplay, MessageExt};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Key(Name, RecordType);
@@ -74,11 +74,10 @@ impl IsGcEligible for RecordEntry {
             Some(exp) => exp,
             None => return false,
         };
-        let is_important_query = [RecordType::A, RecordType::AAAA].contains(
-            &self.message.queries()[0].query_type()
-        );
-        let is_useful_resp = self.message.response_code() == ResponseCode::NoError &&
-            !self.message.answers().is_empty();
+        let is_important_query =
+            [RecordType::A, RecordType::AAAA].contains(&self.message.queries()[0].query_type());
+        let is_useful_resp = self.message.response_code() == ResponseCode::NoError
+            && !self.message.answers().is_empty();
         if mode == GcMode::Aggressive && (!is_important_query || !is_useful_resp) {
             return true;
         }
@@ -119,8 +118,9 @@ impl RecordEntry {
         let q = self.message.queries()[0].clone();
         debug!("Entry expired: {}", q.as_disp());
         let sender = if cfg!(debug_assertions) {
-            sender_locked.try_lock()
-            .expect("This lock should never be contended as it won't leave the outer mutex")
+            sender_locked
+                .try_lock()
+                .expect("This lock should never be contended as it won't leave the outer mutex")
         } else {
             let mut sender = sender_locked.try_lock();
             while sender.is_none() {
@@ -130,20 +130,23 @@ impl RecordEntry {
             }
             sender.unwrap()
         };
-        sender.send(q.into()).is_ok();
+        sender.send(q.into()).ok();
     }
     pub fn is_expired(&self) -> bool {
         match self.expiration {
             None => false,
             Some(ref t) => {
-                if self.record_expiration_counter !=
-                    self.shared.global_expiration_counter.load(Ordering::Relaxed)
+                if self.record_expiration_counter
+                    != self
+                        .shared
+                        .global_expiration_counter
+                        .load(Ordering::Relaxed)
                 {
                     true
                 } else {
                     t <= &SystemTime::now()
                 }
-            },
+            }
         }
     }
     pub fn create_response(&self) -> Message {
@@ -161,22 +164,26 @@ impl RecordEntry {
         });
     }
     pub fn is_authenticated(&self) -> bool {
-        self.message.answers().iter()
-        .chain(self.message.name_servers())
-        .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG))
+        self.message
+            .answers()
+            .iter()
+            .chain(self.message.name_servers())
+            .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG))
     }
     pub fn get_source(&self) -> RecordSource {
         self.source
     }
     pub fn adjust_set_ttl(&self, rec: &mut Record) {
         match self.ttl {
-            TtlMode::Original => {},
-            TtlMode::Fixed(secs) => { rec.set_ttl(secs); },
+            TtlMode::Original => {}
+            TtlMode::Fixed(secs) => {
+                rec.set_ttl(secs);
+            }
             TtlMode::Relative(relto) => {
                 match relto.elapsed() {
                     Err(e) => {
                         warn!("Failed to get elapsed time for setting TTL: {:?}", e);
-                    },
+                    }
                     Ok(dur) => {
                         let diff = min(dur.as_secs(), i32::max_value() as u64) as u32;
                         let mut new_ttl = rec.ttl().saturating_sub(diff);
@@ -185,9 +192,9 @@ impl RecordEntry {
                             new_ttl = 1
                         }
                         rec.set_ttl(new_ttl);
-                    },
+                    }
                 };
-            },
+            }
         };
     }
 }
@@ -199,11 +206,16 @@ pub struct CachePlain {
 }
 pub type CacheInst = Mutex<CachePlain>;
 
-pub trait CacheCommon<TKey, TValue> where TKey: Hash + Eq + PartialEq + Clone {
+pub trait CacheCommon<TKey, TValue>
+where
+    TKey: Hash + Eq + PartialEq + Clone,
+{
     fn get_records(&self) -> &HashMap<TKey, TValue>;
     fn get_mut_records(&mut self) -> &mut HashMap<TKey, TValue>;
     fn get_config(&self) -> &Config;
-    fn name() -> &'static str { "Cache" }
+    fn name() -> &'static str {
+        "Cache"
+    }
     fn len(&self) -> usize {
         self.get_records().len()
     }
@@ -214,21 +226,33 @@ pub trait CacheCommon<TKey, TValue> where TKey: Hash + Eq + PartialEq + Clone {
         if self.len() > self.get_config().cache.cache_limit - 1 {
             // Remove random elements to reduce number of entries
             let num_to_remove = self.len() - self.get_config().cache.cache_limit + 1;
-            let keys = self.get_records().keys().take(num_to_remove).cloned().collect_vec();
-            keys.iter().foreach(|x| { self.get_mut_records().remove(x); });
+            let keys = self
+                .get_records()
+                .keys()
+                .take(num_to_remove)
+                .cloned()
+                .collect_vec();
+            keys.iter().for_each(|x| {
+                self.get_mut_records().remove(x);
+            });
         }
     }
 }
-pub trait CacheCommonGc<TKey, TValue> : CacheCommon<TKey, TValue>
-    where TKey: Hash + Eq + PartialEq + Clone,
-          TValue: IsGcEligible,
+pub trait CacheCommonGc<TKey, TValue>: CacheCommon<TKey, TValue>
+where
+    TKey: Hash + Eq + PartialEq + Clone,
+    TValue: IsGcEligible,
 {
     fn gc_impl(&mut self, mode: GcMode) -> usize {
-        let removed_keys = self.get_records().iter()
-        .filter(|&(_, entry)| entry.is_gc_eligible(mode))
-        .map(|(key, _)| key.clone())
-        .collect_vec();
-        removed_keys.iter().foreach(|k| { self.get_mut_records().remove(k); });
+        let removed_keys = self
+            .get_records()
+            .iter()
+            .filter(|&(_, entry)| entry.is_gc_eligible(mode))
+            .map(|(key, _)| key.clone())
+            .collect_vec();
+        removed_keys.iter().for_each(|k| {
+            self.get_mut_records().remove(k);
+        });
         removed_keys.len()
     }
     fn gc(&mut self) {
@@ -242,17 +266,25 @@ pub trait CacheCommonGc<TKey, TValue> : CacheCommon<TKey, TValue>
         };
         let start_time = Instant::now();
         let removed = self.gc_impl(mode);
-        let elapsed = ChDuration::from_std(start_time.elapsed())
-        .expect("This shouldn't take too long");
-        debug!("GC[{}, {:?}]: {} deleted, {} entries after GC, {} elapsed",
-               Self::name(), mode, removed, self.len(), elapsed);
+        let elapsed =
+            ChDuration::from_std(start_time.elapsed()).expect("This shouldn't take too long");
+        debug!(
+            "GC[{}, {:?}]: {} deleted, {} entries after GC, {} elapsed",
+            Self::name(),
+            mode,
+            removed,
+            self.len(),
+            elapsed
+        );
     }
 }
 impl<T, TKey, TValue> CacheCommonGc<TKey, TValue> for T
-    where TKey: Hash + Eq + PartialEq + Clone,
-          TValue: IsGcEligible,
-          T: CacheCommon<TKey, TValue>,
-{}
+where
+    TKey: Hash + Eq + PartialEq + Clone,
+    TValue: IsGcEligible,
+    T: CacheCommon<TKey, TValue>,
+{
+}
 impl CacheCommon<Key, RecordEntry> for CachePlain {
     fn get_records(&self) -> &HashMap<Key, RecordEntry> {
         &self.records
@@ -288,7 +320,10 @@ impl CachePlain {
             return false;
         }
         let key: Key = (&msg.queries()[0]).into();
-        let msg_has_cname = msg.answers().iter().any(|x| x.rr_type() == RecordType::CNAME);
+        let msg_has_cname = msg
+            .answers()
+            .iter()
+            .any(|x| x.rr_type() == RecordType::CNAME);
         if let Some(existing) = self.records.get(&key) {
             if existing.source > source {
                 // Existing record is more preferable
@@ -300,7 +335,11 @@ impl CachePlain {
                     return true;
                 }
                 if msg.name_servers().is_empty() {
-                    let existing_has_cname = existing.message.answers().iter().any(|r| r.rr_type() == RecordType::CNAME);
+                    let existing_has_cname = existing
+                        .message
+                        .answers()
+                        .iter()
+                        .any(|r| r.rr_type() == RecordType::CNAME);
                     if existing_has_cname && msg_has_cname {
                         // We stripped NS from responses containing CNAME
                         return true;
@@ -309,10 +348,12 @@ impl CachePlain {
                 }
             }
         }
-        let all_records = msg.answers().iter()
-        .chain(msg.name_servers())
-        .chain(msg.additionals())
-        .filter(|x| x.rr_type() != RecordType::OPT);
+        let all_records = msg
+            .answers()
+            .iter()
+            .chain(msg.name_servers())
+            .chain(msg.additionals())
+            .filter(|x| x.rr_type() != RecordType::OPT);
         let min_cache_ttl = self.shared.config.cache.min_cache_ttl;
         let mut cache_ttl = max(
             min_cache_ttl,
@@ -321,8 +362,12 @@ impl CachePlain {
         if msg.response_code() != ResponseCode::NoError || msg.answers().len() == 0 {
             cache_ttl = min(cache_ttl, self.shared.config.cache.neg_cache_ttl as u64);
         }
-        debug!("Updating cache: {} -> {} (TTL: {})",
-               msg.queries()[0].as_disp(), msg.as_disp(), cache_ttl);
+        debug!(
+            "Updating cache: {} -> {} (TTL: {})",
+            msg.queries()[0].as_disp(),
+            msg.as_disp(),
+            cache_ttl
+        );
         let mut cache_msg = msg.clone_resp();
         cache_msg.add_query(msg.queries()[0].clone());
         let ttl_mode = self.ttl_mode(source);
@@ -331,17 +376,21 @@ impl CachePlain {
         } else {
             Some(SystemTime::now() + Duration::from_secs(cache_ttl))
         };
-        self.records.insert(key, RecordEntry {
-            message: cache_msg,
-            expiration,
-            ttl: ttl_mode,
-            expiration_notified: AtomicBool::new(false),
-            source,
-            record_expiration_counter: self.shared.global_expiration_counter.load(
-                Ordering::Relaxed,
-            ),
-            shared: self.shared.clone(),
-        });
+        self.records.insert(
+            key,
+            RecordEntry {
+                message: cache_msg,
+                expiration,
+                ttl: ttl_mode,
+                expiration_notified: AtomicBool::new(false),
+                source,
+                record_expiration_counter: self
+                    .shared
+                    .global_expiration_counter
+                    .load(Ordering::Relaxed),
+                shared: self.shared.clone(),
+            },
+        );
         // Continue query until getting an answer with NS
         !msg.name_servers().is_empty()
     }
@@ -366,7 +415,8 @@ impl Cache {
         }
     }
     pub fn lookup<F, R>(&self, key: &Query, op: F) -> Option<R>
-        where F: FnOnce(&RecordEntry) -> R,
+    where
+        F: FnOnce(&RecordEntry) -> R,
     {
         self.operate(|x| x.lookup(key.into()).map(op))
     }
@@ -376,7 +426,8 @@ impl Cache {
         entry.map(|e| e.fill_response(msg)).is_some()
     }
     pub fn operate<F, R>(&self, op: F) -> R
-        where F: FnOnce(&mut CachePlain) -> R,
+    where
+        F: FnOnce(&mut CachePlain) -> R,
     {
         let mut guard = self.inst.lock().expect("The mutex shouldn't be poisoned");
         op(&mut *guard)
@@ -397,7 +448,8 @@ impl Cache {
         self.operate(|x| x.update(msg, source))
     }
     pub fn expire_all(&self) {
-        self.global_expiration_counter.fetch_add(1, Ordering::Relaxed);
+        self.global_expiration_counter
+            .fetch_add(1, Ordering::Relaxed);
     }
     pub fn clear(&self) {
         self.operate(|x| x.records.clear());
@@ -423,15 +475,15 @@ impl Default for Cache {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::config::*;
+    use crate::mioco_config_start;
+    use mioco;
     use std::sync::atomic::*;
     use std::sync::*;
     use std::time::*;
-    use trust_dns::rr::*;
-    use trust_dns::op::*;
-    use super::*;
-    use config::*;
-    use mioco;
-    use ::mioco_config_start;
+    use trust_dns_proto::op::*;
+    use trust_dns_proto::rr::*;
 
     fn set_name(raw: &str) -> Name {
         Name::parse(raw, Some(&Name::root())).unwrap()
@@ -452,7 +504,7 @@ mod tests {
                 rec.set_rr_type(RecordType::$rtyp);
                 rec.set_rdata(RData::$rtyp($recdata));
                 msg.add_answer(rec);
-             )*;
+             )*
             $cache.update(&msg, RecordSource::Recursive);
         }}
     }
@@ -476,7 +528,8 @@ mod tests {
                 add_entry!(cache, "www.nonexistent8.com", A, NXDomain);
                 assert_eq!(cache.len(), 5);
             });
-        }).unwrap();
+        })
+        .unwrap();
     }
     #[test]
     fn test_neg_ttl() {
@@ -495,7 +548,8 @@ mod tests {
                 cache.gc();
                 assert_eq!(cache.len(), 0);
             });
-        }).unwrap();
+        })
+        .unwrap();
     }
     #[test]
     fn test_gc() {
@@ -510,15 +564,35 @@ mod tests {
                 let shared = cache.shared.clone();
 
                 // Normal mode
-                add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
-                add_entry!(cache, "www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
-                add_entry!(cache, "www.google.com", CNAME, NoError, [1, set_name("cname")]);
+                add_entry!(
+                    cache,
+                    "www.google.com",
+                    A,
+                    NoError,
+                    [1, "1.1.1.1".parse().unwrap()]
+                );
+                add_entry!(
+                    cache,
+                    "www.google.com",
+                    AAAA,
+                    NoError,
+                    [1, "1::1".parse().unwrap()]
+                );
+                add_entry!(
+                    cache,
+                    "www.google.com",
+                    CNAME,
+                    NoError,
+                    [1, set_name("cname")]
+                );
                 add_entry!(cache, "www.nonexistent.com", A, NXDomain);
 
                 assert_eq!(cache.len(), 4);
                 cache.gc_impl(GcMode::Normal);
                 assert_eq!(cache.len(), 4);
-                shared.global_expiration_counter.fetch_add(2, Ordering::Relaxed);
+                shared
+                    .global_expiration_counter
+                    .fetch_add(2, Ordering::Relaxed);
                 cache.gc_impl(GcMode::Normal);
                 assert_eq!(cache.len(), 3);
                 mioco::sleep(Duration::from_secs(3));
@@ -526,20 +600,46 @@ mod tests {
                 assert_eq!(cache.len(), 0);
 
                 // Aggressive mode
-                add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
-                add_entry!(cache, "www.google.com", AAAA, NoError, [1, "1::1".parse().unwrap()]);
-                add_entry!(cache, "www.google.com", CNAME, NoError, [1, set_name("cname")]);
+                add_entry!(
+                    cache,
+                    "www.google.com",
+                    A,
+                    NoError,
+                    [1, "1.1.1.1".parse().unwrap()]
+                );
+                add_entry!(
+                    cache,
+                    "www.google.com",
+                    AAAA,
+                    NoError,
+                    [1, "1::1".parse().unwrap()]
+                );
+                add_entry!(
+                    cache,
+                    "www.google.com",
+                    CNAME,
+                    NoError,
+                    [1, set_name("cname")]
+                );
                 add_entry!(cache, "www.nonexistent.com", A, NXDomain);
 
                 assert_eq!(cache.len(), 4);
                 cache.gc_impl(GcMode::Aggressive);
                 assert_eq!(cache.len(), 2);
-                shared.global_expiration_counter.fetch_add(2, Ordering::Relaxed);
+                shared
+                    .global_expiration_counter
+                    .fetch_add(2, Ordering::Relaxed);
                 cache.gc_impl(GcMode::Aggressive);
                 assert_eq!(cache.len(), 0);
 
                 // Auto mode
-                add_entry!(cache, "www.google.com", A, NoError, [1, "1.1.1.1".parse().unwrap()]);
+                add_entry!(
+                    cache,
+                    "www.google.com",
+                    A,
+                    NoError,
+                    [1, "1.1.1.1".parse().unwrap()]
+                );
                 add_entry!(cache, "www.nonexistent1.com", A, NXDomain);
                 add_entry!(cache, "www.nonexistent2.com", A, NXDomain);
                 add_entry!(cache, "www.nonexistent3.com", A, NXDomain);
@@ -556,7 +656,8 @@ mod tests {
                 cache.gc();
                 assert_eq!(cache.len(), 1);
             });
-        }).unwrap();
+        })
+        .unwrap();
     }
     #[test]
     fn test_record_preference() {
@@ -581,24 +682,60 @@ mod tests {
             let cache = Cache::default();
             assert!(cache.lookup(&q, |x| x.create_response()).is_none());
             cache.update_from_message(&msg1, RecordSource::Forwarder);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 1);
+            assert_eq!(
+                cache
+                    .lookup(&q, |x| x.create_response())
+                    .unwrap()
+                    .answers()
+                    .len(),
+                1
+            );
 
             // Should replace cache with better message
             cache.update_from_message(&msg2, RecordSource::Recursive);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 2);
+            assert_eq!(
+                cache
+                    .lookup(&q, |x| x.create_response())
+                    .unwrap()
+                    .answers()
+                    .len(),
+                2
+            );
 
             // Should not replace cache with worse message
             cache.update_from_message(&msg1, RecordSource::Forwarder);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 2);
+            assert_eq!(
+                cache
+                    .lookup(&q, |x| x.create_response())
+                    .unwrap()
+                    .answers()
+                    .len(),
+                2
+            );
 
             // Should not replace cache until expiration
             cache.update_from_message(&msg1, RecordSource::Recursive);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 2);
+            assert_eq!(
+                cache
+                    .lookup(&q, |x| x.create_response())
+                    .unwrap()
+                    .answers()
+                    .len(),
+                2
+            );
 
             // Even better message
             cache.update_from_message(&msg1, RecordSource::Pinned);
-            assert_eq!(cache.lookup(&q, |x| x.create_response()).unwrap().answers().len(), 1);
-        }).unwrap();
+            assert_eq!(
+                cache
+                    .lookup(&q, |x| x.create_response())
+                    .unwrap()
+                    .answers()
+                    .len(),
+                1
+            );
+        })
+        .unwrap();
     }
     #[test]
     fn test_fill_response() {
@@ -640,8 +777,12 @@ mod tests {
 
         cache.update(&msg, RecordSource::Recursive);
         assert!(cache.lookup(&q).is_some());
-        assert!(cache.lookup(q.set_name(set_name("www.baidu.com"))).is_none());
-        assert!(cache.lookup(q.set_name(set_name("wWw.goOgle.coM"))).is_some());
+        assert!(cache
+            .lookup(q.set_name(set_name("www.baidu.com")))
+            .is_none());
+        assert!(cache
+            .lookup(q.set_name(set_name("wWw.goOgle.coM")))
+            .is_some());
     }
     #[test]
     fn test_ttl_adjust() {
@@ -663,7 +804,7 @@ mod tests {
                     entry.ttl = $e;
                     entry.adjust_set_ttl(&mut rec);
                 }};
-            };
+            }
             rec.set_ttl(120);
             adjust!(TtlMode::Original);
             assert_eq!(rec.ttl(), 120);
@@ -672,23 +813,34 @@ mod tests {
 
             adjust!(TtlMode::Relative(SystemTime::now()));
             assert_eq!(rec.ttl(), 240);
-            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(10)));
+            adjust!(TtlMode::Relative(
+                SystemTime::now() - Duration::from_secs(10)
+            ));
             assert_eq!(rec.ttl(), 230);
-            adjust!(TtlMode::Relative(SystemTime::now() - Duration::new(10, 999999999)));
+            adjust!(TtlMode::Relative(
+                SystemTime::now() - Duration::new(10, 999999999)
+            ));
             assert_eq!(rec.ttl(), 219);
-            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(500)));
+            adjust!(TtlMode::Relative(
+                SystemTime::now() - Duration::from_secs(500)
+            ));
             assert_eq!(rec.ttl(), min_ttl);
 
             rec.set_ttl(240);
-            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(u32::max_value() as u64)));
+            adjust!(TtlMode::Relative(
+                SystemTime::now() - Duration::from_secs(u32::max_value() as u64)
+            ));
             assert_eq!(rec.ttl(), min_ttl);
             rec.set_ttl(240);
 
             // Using `Duration::from_secs(u64::max_value())` will silently overflow and give us
             // incorrect result, so we test with `u64::max_value() >> 1` here.
             // Ref: https://github.com/rust-lang/rust/issues/32070
-            adjust!(TtlMode::Relative(SystemTime::now() - Duration::from_secs(u64::max_value() >> 1)));
+            adjust!(TtlMode::Relative(
+                SystemTime::now() - Duration::from_secs(u64::max_value() >> 1)
+            ));
             assert_eq!(rec.ttl(), min_ttl);
-        }).unwrap();
+        })
+        .unwrap();
     }
 }

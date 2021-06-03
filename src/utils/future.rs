@@ -1,7 +1,7 @@
 use std::sync::mpsc::TryRecvError;
 
 use mioco;
-use mioco::sync::mpsc::{channel, Sender, Receiver};
+use mioco::sync::mpsc::{channel, Receiver, Sender};
 
 pub struct Future<T: Send> {
     value: Option<T>,
@@ -16,14 +16,17 @@ impl<T: Send + 'static> Future<T> {
         };
         (ret, sender)
     }
-    pub fn from_fn<F: 'static>(f: F) -> Self where F : Send + FnOnce() -> T {
+    pub fn from_fn<F: 'static>(f: F) -> Self
+    where
+        F: Send + FnOnce() -> T,
+    {
         let (ret, sender) = Self::new();
         mioco::spawn(move || {
             match sender.send(f()) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(_) => {
                     trace!("Future was dropped before completion.");
-                },
+                }
             };
         });
         ret
@@ -45,7 +48,7 @@ impl<T: Send + 'static> Future<T> {
             Ok(x) => {
                 self.value = Some(x);
                 true
-            },
+            }
             Err(TryRecvError::Empty) => false,
             Err(TryRecvError::Disconnected) => panic!("Future is panicked"),
         }

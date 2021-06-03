@@ -1,28 +1,31 @@
-use std;
-use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
-use std::marker::PhantomData;
-use std::ops::Deref;
-use std::sync::Arc;
-use std::io;
-use std::fs::File;
-use std::io::{Read};
 use linked_hash_map::Entry as BtEntry;
+use std;
+use std::fs::File;
+use std::io;
+use std::io::Read;
+use std::marker::PhantomData;
+use std::net::{IpAddr, SocketAddr};
+use std::ops::Deref;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+use trust_dns_client::rr::DNSClass;
 
-use serde_yaml;
-use serde::{Deserialize, Deserializer};
 use serde::de::Error as DesError;
-use yaml_rust::{Yaml, YamlLoader, YamlEmitter};
-use trust_dns::rr::{Name, RecordSet, RecordType};
+use serde::{Deserialize, Deserializer};
+use serde_yaml;
+use trust_dns_proto::rr::{Name, RecordSet, RecordType};
+use yaml_rust::{Yaml, YamlEmitter, YamlLoader};
 
-use utils::IpSet;
+use crate::utils::IpSet;
 
 pub trait Validator<T> {
     fn validate(val: &T) -> Result<(), String>;
 }
 impl<T> Validator<T> for () {
-    fn validate(_: &T) -> Result<(), String> { Ok(()) }
+    fn validate(_: &T) -> Result<(), String> {
+        Ok(())
+    }
 }
 #[derive(Debug)]
 pub struct NoRootName;
@@ -35,33 +38,49 @@ impl Validator<Name> for NoRootName {
     }
 }
 #[derive(Debug)]
-pub struct ProxiedValue<TStorage, TValue, TValidator: Validator<TValue> = ()>(TValue, PhantomData<TStorage>, PhantomData<TValidator>);
-impl<TStorage, TValue, TValidator: Validator<TValue>> Deref for ProxiedValue<TStorage, TValue, TValidator> {
+pub struct ProxiedValue<TStorage, TValue, TValidator: Validator<TValue> = ()>(
+    TValue,
+    PhantomData<TStorage>,
+    PhantomData<TValidator>,
+);
+impl<TStorage, TValue, TValidator: Validator<TValue>> Deref
+    for ProxiedValue<TStorage, TValue, TValidator>
+{
     type Target = TValue;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
-impl<TStorage, TValue, TValidator: Validator<TValue>> From<TValue> for ProxiedValue<TStorage, TValue, TValidator> {
+impl<TStorage, TValue, TValidator: Validator<TValue>> From<TValue>
+    for ProxiedValue<TStorage, TValue, TValidator>
+{
     fn from(val: TValue) -> Self {
         ProxiedValue(val, PhantomData, PhantomData)
     }
 }
 pub trait FromStorage<'de, TStorage> {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &TStorage) -> Result<Self, TDes::Error> where Self: Sized;
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(
+        storage: &TStorage,
+    ) -> Result<Self, TDes::Error>
+    where
+        Self: Sized;
 }
-impl<'de, TStorage, TValue, TValidator> Deserialize<'de> for ProxiedValue<TStorage, TValue, TValidator>
-    where TStorage: Deserialize<'de> + std::fmt::Display,
-          TValue: FromStorage<'de, TStorage>,
-          TValidator: Validator<TValue>
+impl<'de, TStorage, TValue, TValidator> Deserialize<'de>
+    for ProxiedValue<TStorage, TValue, TValidator>
+where
+    TStorage: Deserialize<'de> + std::fmt::Display,
+    TValue: FromStorage<'de, TStorage>,
+    TValidator: Validator<TValue>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where D: Deserializer<'de>,
+    where
+        D: Deserializer<'de>,
     {
-        let val = try!(TStorage::deserialize(deserializer));
-        let result = try!(TValue::from_storage::<D>(&val));
-        TValidator::validate(&result).map_err(|e| D::Error::custom(format!("Invalid value {}: {}", val, e)))?;
+        let val = (TStorage::deserialize(deserializer))?;
+        let result = (TValue::from_storage::<D>(&val))?;
+        TValidator::validate(&result)
+            .map_err(|e| D::Error::custom(format!("Invalid value {}: {}", val, e)))?;
         Ok(result.into())
     }
 }
@@ -71,46 +90,54 @@ impl<'de> FromStorage<'de, u32> for Duration {
     }
 }
 impl<'de> FromStorage<'de, String> for Arc<IpSet> {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
-        IpSet::from_file(&storage)
-        .map(Arc::new)
-        .map_err(|e| TDes::Error::custom(format!(
-            "Failed to load IP list from {}: {}", storage, e,
-        )))
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(
+        storage: &String,
+    ) -> Result<Self, TDes::Error> {
+        IpSet::from_file(&storage).map(Arc::new).map_err(|e| {
+            TDes::Error::custom(format!("Failed to load IP list from {}: {}", storage, e,))
+        })
     }
 }
 impl<'de> FromStorage<'de, String> for Name {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
-        Name::parse(&storage, Some(&Name::root()))
-        .map_err(|e| TDes::Error::custom(format!(
-            "Failed to parse domain name {}: {}", storage, e,
-        )))
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(
+        storage: &String,
+    ) -> Result<Self, TDes::Error> {
+        Name::parse(&storage, Some(&Name::root())).map_err(|e| {
+            TDes::Error::custom(format!("Failed to parse domain name {}: {}", storage, e,))
+        })
     }
 }
 impl<'de> FromStorage<'de, String> for RecordSet {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
-        use trust_dns::serialize::txt::{Lexer, Parser};
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(
+        storage: &String,
+    ) -> Result<Self, TDes::Error> {
+        use trust_dns_client::serialize::txt::{Lexer, Parser};
         let mut storage = storage.clone();
         storage += "\n";
         let lexer = Lexer::new(&storage);
-        let (_, rrsets) = Parser::new().parse(lexer, Some(Name::root()))
-        .map_err(|e| TDes::Error::custom(format!(
-            "Failed to parse local record {}: {}", storage, e,
-        )))?;
+        let (_, rrsets) = Parser::new()
+            .parse(lexer, Some(Name::root()), Some(DNSClass::IN))
+            .map_err(|e| {
+                TDes::Error::custom(format!("Failed to parse local record {}: {}", storage, e,))
+            })?;
         if rrsets.len() != 1 {
             return Err(TDes::Error::custom(format!(
                 "Failed to parse local record {}: Each entry must contain exactly one record set, instead of {}", storage, rrsets.len(),
             )));
         }
         let rrset = rrsets.into_iter().next().unwrap().1;
+        #[allow(deprecated)]
         if rrset.iter().len() == 0 {
             return Err(TDes::Error::custom(format!(
-                "Failed to parse local record {}: No record in entry", storage,
+                "Failed to parse local record {}: No record in entry",
+                storage,
             )));
         }
+        #[allow(deprecated)]
         if rrset.record_type() == RecordType::CNAME && rrset.iter().len() != 1 {
             return Err(TDes::Error::custom(format!(
-                "Failed to parse local record {}: CNAME entry must contain exactly one record", storage,
+                "Failed to parse local record {}: CNAME entry must contain exactly one record",
+                storage,
             )));
         }
         Ok(rrset)
@@ -121,12 +148,12 @@ macro_attr! {
     pub struct PermissionBits(u32);
 }
 impl<'de> FromStorage<'de, String> for PermissionBits {
-    fn from_storage<TDes: ?Sized + Deserializer<'de>>(storage: &String) -> Result<Self, TDes::Error> {
+    fn from_storage<TDes: ?Sized + Deserializer<'de>>(
+        storage: &String,
+    ) -> Result<Self, TDes::Error> {
         u32::from_str_radix(&storage, 8)
-        .map(Into::into)
-        .map_err(|_| TDes::Error::custom(&format!(
-            "Invalid permission bits: {}", storage,
-        )))
+            .map(Into::into)
+            .map_err(|_| TDes::Error::custom(&format!("Invalid permission bits: {}", storage,)))
     }
 }
 
@@ -184,8 +211,9 @@ pub enum IpWithOptionalPort {
 impl FromStr for IpWithOptionalPort {
     type Err = std::net::AddrParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse().map(IpWithOptionalPort::NoPort)
-        .or_else(|_| s.parse().map(IpWithOptionalPort::WithPort))
+        s.parse()
+            .map(IpWithOptionalPort::NoPort)
+            .or_else(|_| s.parse().map(IpWithOptionalPort::WithPort))
     }
 }
 impl IpWithOptionalPort {
@@ -246,27 +274,33 @@ fn merge_yaml(base: Yaml, input: Yaml) -> Yaml {
     let input = if let Yaml::Hash(hash) = input {
         hash
     } else {
-        return input
+        return input;
     };
     let mut target = if let Yaml::Hash(base_hash) = base {
         base_hash
     } else {
-        return Yaml::Hash(input)
+        return Yaml::Hash(input);
     };
     for (k, v) in input {
         match target.entry(k) {
-            BtEntry::Vacant(e) => { e.insert(v); },
+            BtEntry::Vacant(e) => {
+                e.insert(v);
+            }
             BtEntry::Occupied(mut e) => {
                 let old = e.insert(Yaml::Null);
                 e.insert(merge_yaml(old, v));
-            },
+            }
         };
     }
     Yaml::Hash(target)
 }
 fn merge_config_values(user_values: Yaml) -> Yaml {
     merge_yaml(
-        YamlLoader::load_from_str(DEFAULT_CONFIG).unwrap().into_iter().next().unwrap(),
+        YamlLoader::load_from_str(DEFAULT_CONFIG)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap(),
         user_values,
     )
 }
@@ -277,10 +311,8 @@ fn read_file(path: &str) -> io::Result<String> {
     Ok(buffer)
 }
 fn parse_yaml(content: &str) -> io::Result<Yaml> {
-    let parsed_yaml_docs = try!(
-        YamlLoader::load_from_str(content)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    );
+    let parsed_yaml_docs = (YamlLoader::load_from_str(content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)))?;
     if parsed_yaml_docs.len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -303,8 +335,10 @@ impl FromStr for Config {
         if let Some(vec) = merged["include"].as_vec().map(|x| (*x).clone()) {
             for elem in &vec {
                 if let Some(s) = elem.as_str() {
-                    let content = read_file(s).map_err(|e| err(format!("Failed to read included file {}: {}", s, e)))?;
-                    let doc = parse_yaml(&content).map_err(|e| err(format!("Failed to parse included file {}: {}", s, e)))?;
+                    let content = read_file(s)
+                        .map_err(|e| err(format!("Failed to read included file {}: {}", s, e)))?;
+                    let doc = parse_yaml(&content)
+                        .map_err(|e| err(format!("Failed to parse included file {}: {}", s, e)))?;
                     merged = merge_yaml(merged, doc);
                 } else {
                     return Err(err(format!("Invalid data in include list: {:?}", elem)));
@@ -317,17 +351,17 @@ impl FromStr for Config {
             emitter.dump(&merged).unwrap(); // dump the YAML object to a String
         }
         serde_yaml::from_str(&out_str)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::IpAddr;
-    use std::fs::{File, remove_file};
+    use std::fs::{remove_file, File};
     use std::io::Write;
-    use trust_dns::rr::RecordType;
+    use std::net::IpAddr;
+    use trust_dns_proto::rr::RecordType;
 
     #[test]
     fn test_default_config() {
@@ -342,9 +376,15 @@ local_records:
         "#;
         let config = Config::from_str(config_file).unwrap();
         assert_eq!(config.local_records.len(), 2);
-        assert_eq!(config.local_records[0].name(), &Name::parse("abc.test", Some(&Name::root())).unwrap());
+        assert_eq!(
+            config.local_records[0].name(),
+            &Name::parse("abc.test", Some(&Name::root())).unwrap()
+        );
         assert_eq!(config.local_records[0].record_type(), RecordType::A);
-        assert_eq!(config.local_records[1].name(), &Name::parse("def.xxx", Some(&Name::root())).unwrap());
+        assert_eq!(
+            config.local_records[1].name(),
+            &Name::parse("def.xxx", Some(&Name::root())).unwrap()
+        );
         assert_eq!(config.local_records[1].record_type(), RecordType::CNAME);
     }
     #[test]
@@ -386,7 +426,10 @@ forward_zones:
         assert_eq!(config.serve.ip, "1.1.1.1".parse::<IpAddr>().unwrap());
         assert_eq!(config.serve.port, default_config.serve.port);
         assert_eq!(config.forwarders.len(), 1);
-        assert_eq!(config.forwarders[0].servers[0], "1.2.3.4".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            config.forwarders[0].servers[0],
+            "1.2.3.4".parse::<IpAddr>().unwrap()
+        );
     }
     #[test]
     fn test_empty_include() {
@@ -394,9 +437,14 @@ forward_zones:
         let included_file = r#"---
 
         "#;
-        { File::create(INCLUDE_PATH).unwrap().write_all(included_file.as_bytes()).unwrap(); }
+        {
+            File::create(INCLUDE_PATH)
+                .unwrap()
+                .write_all(included_file.as_bytes())
+                .unwrap();
+        }
         Config::from_str(&format!("---\n\ninclude: [\"{}\"]", INCLUDE_PATH)).unwrap();
-        remove_file(INCLUDE_PATH).is_ok();
+        remove_file(INCLUDE_PATH).ok();
     }
     #[test]
     fn test_included_config() {
@@ -409,13 +457,21 @@ forwarders:
     - servers:
         - "1.2.3.4"
         "#;
-        { File::create(INCLUDE_PATH).unwrap().write_all(included_file.as_bytes()).unwrap(); }
+        {
+            File::create(INCLUDE_PATH)
+                .unwrap()
+                .write_all(included_file.as_bytes())
+                .unwrap();
+        }
         let config = Config::from_str(&format!("---\n\ninclude: [\"{}\"]", INCLUDE_PATH)).unwrap();
-        remove_file(INCLUDE_PATH).is_ok();
+        remove_file(INCLUDE_PATH).ok();
         let default_config = Config::default();
         assert_eq!(config.serve.ip, "1.1.1.1".parse::<IpAddr>().unwrap());
         assert_eq!(config.serve.port, default_config.serve.port);
         assert_eq!(config.forwarders.len(), 1);
-        assert_eq!(config.forwarders[0].servers[0], "1.2.3.4".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            config.forwarders[0].servers[0],
+            "1.2.3.4".parse::<IpAddr>().unwrap()
+        );
     }
 }

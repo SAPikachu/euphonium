@@ -1,32 +1,23 @@
-use std::collections::HashSet;
-use std::time::{UNIX_EPOCH, Duration};
-
-use trust_dns::op::{Message, Query, Edns};
-use trust_dns::rr::{DNSClass, RecordType, Record, RData, Name};
+use trust_dns_proto::op::{Edns, Message, Query};
+use trust_dns_proto::rr::dnssec::TrustAnchor;
 use trust_dns_proto::rr::domain::IntoLabel;
-use trust_dns_proto::rr::dnssec::rdata::{DNSSECRecordType, DNSSECRData};
-use trust_dns::rr::rdata::{SIG, DNSKEY, NSEC3};
-use trust_dns::rr::dnssec::{TrustAnchor, Verifier};
-use trust_dns::serialize::binary::{BinEncoder};
-use trust_dns_proto::serialize::binary::BinEncodable;
-use itertools::Itertools;
-use data_encoding::base32hex;
+use trust_dns_proto::rr::Name;
 
-use resolver::RcResolver;
-use utils::{Result};
-use utils::as_disp::AsDisplay;
-use recursive::RecursiveResolver;
+use crate::recursive::RecursiveResolver;
+use crate::resolver::RcResolver;
+use crate::utils::Result;
 
 lazy_static! {
     static ref TRUST_ANCHOR: TrustAnchor = TrustAnchor::default();
 }
-
+/*
 #[derive(Eq, PartialEq, Debug)]
 enum ValidationResult {
     NonAuthenticated,
     Authenticated,
     Bogus,
 }
+*/
 pub trait ResponseValidator {
     fn is_valid(&mut self, msg: &Message) -> Result<bool>;
     fn prepare_msg(&mut self, msg: &mut Message, edns: &mut Edns);
@@ -36,7 +27,7 @@ impl ResponseValidator for DummyValidator {
     fn is_valid(&mut self, _: &Message) -> Result<bool> {
         Ok(true)
     }
-    fn prepare_msg(&mut self, _: &mut Message, _: &mut Edns) { }
+    fn prepare_msg(&mut self, _: &mut Message, _: &mut Edns) {}
 }
 #[cfg(test)]
 struct DummyValidatorWithDnssec;
@@ -59,13 +50,16 @@ impl SubqueryResolver for RcResolver {
     }
 }
 trait NameExt {
-    fn prepend_label<T: IntoLabel>(&self, label: T) -> Result<Self> where Self: Sized;
+    fn prepend_label<T: IntoLabel>(&self, label: T) -> Result<Self>
+    where
+        Self: Sized;
 }
 impl NameExt for Name {
     fn prepend_label<T: IntoLabel>(&self, label: T) -> Result<Self> {
         Ok(Name::root().append_label(label)?.append_name(&self))
     }
 }
+/*
 pub struct DnssecValidator<T: SubqueryResolver> {
     resolver: T,
 }
@@ -120,17 +114,17 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             // Avoid infinite loop
             return Ok(false);
         }
-        let ds_resp = try!(self.subquery(
+        let ds_resp = (self.subquery(
             dnskey.name(),
             RecordType::DNSSEC(DNSSECRecordType::DS),
             dnskey.dns_class(),
-        ));
+        ))?;
         let mut buf = Vec::<u8>::new();
         {
             let mut encoder = BinEncoder::new(&mut buf);
             encoder.set_canonical_names(true);
-            try!(dnskey.name().emit(&mut encoder));
-            try!(dnskey.rdata().emit(&mut encoder));
+            (dnskey.name().emit(&mut encoder))?;
+            (dnskey.rdata().emit(&mut encoder))?;
         }
         Ok(ds_resp.answers().iter().any(|x| match *x.rdata() {
             RData::DNSSEC(DNSSECRData::DS(ref ds)) if *ds.algorithm() == algorithm => {
@@ -182,7 +176,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         q.set_name(signer_name.clone())
         .set_query_class(rr_class)
         .set_query_type(RecordType::DNSSEC(DNSSECRecordType::DNSKEY));
-        let resp = try!(self.resolver.resolve_sub(q));
+        let resp = (self.resolver.resolve_sub(q))?;
         Ok(resp.answers().iter().filter_map(|rec| match *rec.rdata() {
             RData::DNSSEC(DNSSECRData::DNSKEY(ref dnskey)) => Some(dnskey.clone()),
             _ => None,
@@ -222,7 +216,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
             let dnskeys = if rr_type == RecordType::DNSSEC(DNSSECRecordType::DNSKEY) && signer_name == rr_name {
                 self.get_delegated_dnskeys(rrset)
             } else {
-                try!(self.query_dnskey(signer_name, rr_class))
+                (self.query_dnskey(signer_name, rr_class))?
             };
             for key in dnskeys {
                 if key.algorithm() != sig.algorithm() {
@@ -302,7 +296,7 @@ impl<T: SubqueryResolver> DnssecValidator<T> {
         rrset.iter()
         .filter(|rr| rr.rr_type() != RecordType::DNSSEC(DNSSECRecordType::RRSIG))
         .map(|rr| (rr.name().clone(), rr.rr_type()))
-        .foreach(|rr| { rrset_types.insert(rr); });
+        .for_each(|rr| { rrset_types.insert(rr); });
 
         let mut wildcard_num_labels = Option::<u8>::default();
         for (name, rr_type) in rrset_types {
@@ -612,21 +606,23 @@ impl<T: SubqueryResolver> ResponseValidator for DnssecValidator<T> {
         self.verify_rrsigs(msg).map(|x| x != ValidationResult::Bogus)
     }
 }
+*/
 
+/*
 #[cfg(test)]
 mod tests {
     extern crate env_logger;
     use std::net::IpAddr;
     use std::time::Duration;
-    use trust_dns::op::*;
-    use trust_dns::rr::*;
-    use trust_dns::serialize::binary::*;
+    use trust_dns_proto::op::*;
+    use trust_dns_proto::rr::*;
+    use trust_dns_proto::serialize::binary::*;
     use super::*;
-    use ::query::query_with_validator;
-    use ::config::*;
-    use ::resolver::*;
-    use ::recursive::*;
-    use ::mioco_config_start;
+    use crate::query::query_with_validator;
+    use crate::config::*;
+    use crate::resolver::*;
+    use crate::recursive::*;
+    use crate::mioco_config_start;
 
     fn test_query_with_server(domain: &str, qtype: RecordType, server: IpAddr) -> Message {
         let mut q = Query::new();
@@ -669,7 +665,7 @@ mod tests {
         });
     }
     fn test_valid_query_core<T: FnOnce(&Message) + Send + 'static>(domain: &'static str, qtype: RecordType, extra_check: T) {
-        env_logger::try_init().is_ok();
+        env_logger::try_init().ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let mut validator = DnssecValidator::new(resolver.clone());
@@ -685,7 +681,7 @@ mod tests {
     #[test]
     fn test_dnssec_valid() {
         test_valid_query("sigok.verteiltesysteme.net");
-        env_logger::try_init().is_ok();
+        env_logger::try_init().ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let mut validator = DnssecValidator::new(resolver.clone());
@@ -716,7 +712,7 @@ mod tests {
     }
     #[test]
     fn test_dnssec_valid_cname() {
-        env_logger::try_init().is_ok();
+        env_logger::try_init().ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let mut validator = DnssecValidator::new(resolver.clone());
@@ -785,7 +781,7 @@ mod tests {
     }
     #[test]
     fn test_dnssec_invalid() {
-        env_logger::try_init().is_ok();
+        env_logger::try_init().ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let msg = test_query("sigfail.verteiltesysteme.net", RecordType::A);
@@ -796,7 +792,7 @@ mod tests {
     }
     #[test]
     fn test_dnssec_integrated_2() {
-        env_logger::try_init().is_ok();
+        env_logger::try_init().ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let mut q = Query::new();
@@ -810,7 +806,7 @@ mod tests {
     }
     #[test]
     fn test_dnssec_integrated() {
-        env_logger::try_init().is_ok();
+        env_logger::try_init().ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let mut q = Query::new();
@@ -832,7 +828,7 @@ mod tests {
     fn test_dnssec_rollernet() {
         // This test will fail after signature in the data is expired, leaving here for
         // reference only
-        env_logger::try_init().is_ok();
+        env_logger::try_init().ok();
         mioco_config_start(move || {
             let resolver = new_resolver();
             let data_str = r"
@@ -883,3 +879,4 @@ b461 677e cf31 8883 b8c0 6d00 0100 0100
         }).unwrap();
     }
 }
+*/

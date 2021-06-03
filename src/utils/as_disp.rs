@@ -1,8 +1,10 @@
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
-use trust_dns::op::{Query, Message, MessageType};
+use trust_dns_proto::op::{Message, MessageType, Query};
 
-pub struct DisplayWrapper<'a, T: ?Sized>(&'a T) where T: 'static;
+pub struct DisplayWrapper<'a, T: ?Sized>(&'a T)
+where
+    T: 'static;
 pub trait AsDisplay {
     fn as_disp(&self) -> DisplayWrapper<Self> {
         DisplayWrapper(self)
@@ -20,12 +22,10 @@ impl<'a> Display for DisplayWrapper<'a, Message> {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         let msg = self.0;
         match msg.message_type() {
-            MessageType::Query if msg.queries().is_empty() => write!(
-                f, "[{}] (no query)", msg.id(),
-            ),
-            MessageType::Query => write!(
-                f, "[{}] {}", msg.id(), msg.queries()[0].as_disp(),
-            ),
+            MessageType::Query if msg.queries().is_empty() => {
+                write!(f, "[{}] (no query)", msg.id(),)
+            }
+            MessageType::Query => write!(f, "[{}] {}", msg.id(), msg.queries()[0].as_disp(),),
             MessageType::Response => write!(
                 f,
                 "[{}] {:?} {}/{}/{}",
@@ -34,8 +34,7 @@ impl<'a> Display for DisplayWrapper<'a, Message> {
                 msg.answers().len(),
                 msg.name_servers().len(),
                 msg.additionals().len(),
-            )
+            ),
         }
     }
 }
-
