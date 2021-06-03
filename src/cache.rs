@@ -329,6 +329,19 @@ impl CachePlain {
                 // Existing record is more preferable
                 return true;
             }
+            let query = &msg.queries()[0];
+            let existing_has_answer = existing
+                .message
+                .answers()
+                .iter()
+                .any(|x| x.name() == query.name() && x.rr_type() == query.query_type());
+            let msg_has_answer = msg
+                .answers()
+                .iter()
+                .any(|x| x.name() == query.name() && x.rr_type() == query.query_type());
+            if existing_has_answer && !msg_has_answer {
+                return false;
+            }
             if existing.source == source && !existing.is_expired() {
                 if !existing.message.name_servers().is_empty() {
                     // Existing record is more preferable
@@ -479,10 +492,6 @@ mod tests {
     use crate::config::*;
     use crate::mioco_config_start;
     use mioco;
-    use std::sync::atomic::*;
-    use std::sync::*;
-    use std::time::*;
-    use trust_dns_proto::op::*;
     use trust_dns_proto::rr::*;
 
     fn set_name(raw: &str) -> Name {
