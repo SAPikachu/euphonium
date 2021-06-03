@@ -132,8 +132,8 @@ impl MessageExt for Message {
         let mut new_msg = self.truncate();
         assert!(new_msg.queries().is_empty());
         assert!(new_msg.answers().is_empty());
-        assert!(new_msg.name_servers().is_empty());
         assert!(new_msg.additionals().is_empty());
+        new_msg.take_name_servers();
         new_msg.set_truncated(false);
         new_msg.set_checking_disabled(self.checking_disabled());
         new_msg.set_authentic_data(self.authentic_data());
