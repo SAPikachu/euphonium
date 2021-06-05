@@ -65,6 +65,20 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
             .any(|rec| rec.rr_type() == RecordType::DNSSEC(DNSSECRecordType::RRSIG));
         ret.set_authentic_data(is_authenticated);
     }
+    let query = &msg.queries()[0];
+    if ret.response_code() == ResponseCode::NoError
+        && !ret
+            .answers()
+            .iter()
+            .any(|x| x.name() == query.name() && x.rr_type() == query.query_type())
+        && ret
+            .answers()
+            .iter()
+            .any(|x| x.name() == query.name() && x.rr_type() == RecordType::CNAME)
+    {
+        warn!("Broken CNAME chain for {}", query.as_disp());
+        ret.set_response_code(ResponseCode::ServFail);
+    }
     let mut bytes = (ret.to_bytes())?;
     if should_truncate && bytes.len() > (msg.max_payload() as usize) {
         ret.set_truncated(true);
