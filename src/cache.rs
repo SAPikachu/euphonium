@@ -329,17 +329,7 @@ impl CachePlain {
                 // Existing record is more preferable
                 return true;
             }
-            let query = &msg.queries()[0];
-            let existing_has_answer = existing
-                .message
-                .answers()
-                .iter()
-                .any(|x| x.name() == query.name() && x.rr_type() == query.query_type());
-            let msg_has_answer = msg
-                .answers()
-                .iter()
-                .any(|x| x.name() == query.name() && x.rr_type() == query.query_type());
-            if existing_has_answer && !msg_has_answer {
+            if existing.message.is_cname_chain_complete() && !msg.is_cname_chain_complete() {
                 return false;
             }
             if existing.source == source && !existing.is_expired() {

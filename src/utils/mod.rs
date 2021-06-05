@@ -4,7 +4,9 @@ use std::io;
 
 use std::net::SocketAddr;
 
+use itertools::Itertools;
 use mioco::udp::UdpSocket;
+use trust_dns_client::rr::RData;
 use trust_dns_proto::error::ProtoError;
 use trust_dns_proto::op::{Message, MessageType, Query};
 use trust_dns_proto::rr::{Name, Record, RecordType};
@@ -73,6 +75,7 @@ pub trait MessageExt {
         F: FnMut(&Record) -> Record;
     fn without_rr(&self) -> Message;
     fn is_resp_for(&self, other: &Message) -> bool;
+    fn is_cname_chain_complete(&self) -> bool;
 }
 impl MessageExt for Message {
     fn from_udp(sock: &mut UdpSocket) -> Result<(Message, SocketAddr)> {
@@ -187,5 +190,266 @@ impl MessageExt for Message {
             return false;
         }
         true
+    }
+    fn is_cname_chain_complete(&self) -> bool {
+        assert_eq!(self.message_type(), MessageType::Response);
+        assert_eq!(self.queries().len(), 1);
+        let query = &self.queries()[0];
+        let mut cur_record = self
+            .answers()
+            .iter()
+            .find(|x| x.name() == query.name() && x.record_type() == RecordType::CNAME);
+        if cur_record.is_none() {
+            // No CNAME in response
+            return true;
+        }
+        let mut checked_names = Vec::<&Name>::new();
+        checked_names.push(query.name());
+        while let Some(rec) = cur_record {
+            if let RData::CNAME(next_name) = rec.rdata() {
+                if checked_names.contains(&next_name) {
+                    break;
+                }
+                checked_names.push(next_name);
+                let next_recs = self
+                    .answers()
+                    .iter()
+                    .filter(|x| x.name() == next_name)
+                    .collect_vec();
+                if next_recs.is_empty() {
+                    break;
+                }
+                if next_recs
+                    .iter()
+                    .any(|x| x.record_type() == query.query_type())
+                {
+                    return true;
+                }
+                cur_record = next_recs
+                    .iter()
+                    .find(|x| x.record_type() == RecordType::CNAME)
+                    .map(|x| *x);
+            } else {
+                panic!("Not CNAME??")
+            }
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use trust_dns_client::{op::ResponseCode, rr::DNSClass};
+
+    #[test]
+    fn test_is_cname_chain_complete() {
+        let mut msg = Message::new();
+        msg.set_message_type(MessageType::Response);
+        let mut query = Query::new();
+        query.set_name("a.example.com".parse().unwrap());
+        query.set_query_class(DNSClass::IN);
+        query.set_query_type(RecordType::A);
+        msg.queries_mut().push(query);
+        msg.set_response_code(ResponseCode::NoError);
+
+        assert!(msg.is_cname_chain_complete());
+
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.1".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        // Don't care if there is no CNAME
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::AAAA("fc00::1".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.1".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.1".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.1".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.1".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.2".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::AAAA("fc00::1".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.2".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.2".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::AAAA("fc00::1".parse().unwrap()),
+        ));
+        assert!(msg.is_cname_chain_complete());
+
+        // Incomplete chain cases
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "d.example.com".parse().unwrap(),
+            5,
+            RData::A("1.1.1.1".parse().unwrap()),
+        ));
+        assert!(!msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::AAAA("fc00::1".parse().unwrap()),
+        ));
+        assert!(!msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("a.example.com".parse().unwrap()),
+        ));
+        assert!(!msg.is_cname_chain_complete());
+
+        msg.take_answers();
+        msg.answers_mut().push(Record::from_rdata(
+            "a.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "b.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("c.example.com".parse().unwrap()),
+        ));
+        msg.answers_mut().push(Record::from_rdata(
+            "c.example.com".parse().unwrap(),
+            5,
+            RData::CNAME("b.example.com".parse().unwrap()),
+        ));
+        assert!(!msg.is_cname_chain_complete());
     }
 }

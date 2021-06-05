@@ -66,16 +66,7 @@ fn handle_request(resolver: &RcResolver, msg: &Message, should_truncate: bool) -
         ret.set_authentic_data(is_authenticated);
     }
     let query = &msg.queries()[0];
-    if ret.response_code() == ResponseCode::NoError
-        && !ret
-            .answers()
-            .iter()
-            .any(|x| x.name() == query.name() && x.rr_type() == query.query_type())
-        && ret
-            .answers()
-            .iter()
-            .any(|x| x.name() == query.name() && x.rr_type() == RecordType::CNAME)
-    {
+    if ret.response_code() == ResponseCode::NoError && !ret.is_cname_chain_complete() {
         warn!("Broken CNAME chain for {}", query.as_disp());
         ret.set_response_code(ResponseCode::ServFail);
     }
